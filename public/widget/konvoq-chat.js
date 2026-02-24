@@ -1,5 +1,5 @@
 /**
- * Witzo Chat Widget - Standalone Version
+ * Konvoq Chat Widget - Standalone Version
  * Updated to match text-widget design
  */
 (function () {
@@ -22,7 +22,7 @@
 	}
 
 	// Define the custom element
-	class WitzoChatWidget extends HTMLElement {
+	class KonvoqChatWidget extends HTMLElement {
 		constructor() {
 			super();
 			this.attachShadow({ mode: "open" });
@@ -180,32 +180,32 @@
 
 		initializeSession() {
 			const date = sessionStorage.getItem(
-				"witzo_chat_date",
+				"konvoq_chat_date",
 			);
 			if (date) {
 				this.date = new Date(date);
 			} else {
 				sessionStorage.setItem(
-					"witzo_chat_date",
+					"konvoq_chat_date",
 					new Date().toISOString(),
 				);
 			}
 
 			const chatCount = sessionStorage.getItem(
-				"witzo_chat_count",
+				"konvoq_chat_count",
 			);
 			if (chatCount)
 				this.successfulChatCount =
 					Number(chatCount);
 			else
 				sessionStorage.setItem(
-					"witzo_chat_count",
+					"konvoq_chat_count",
 					`0`,
 				);
 
 			// Session Token
 			const STORAGE_KEY =
-				"witzo_chat_session_token";
+				"konvoq_chat_session_token";
 			let session =
 				sessionStorage.getItem(STORAGE_KEY);
 			if (!session) {
@@ -233,11 +233,11 @@
 		}
 
 		getRatingShownKey() {
-			return `witzo_chat_rating_shown_${this.sessionId}`;
+			return `konvoq_chat_rating_shown_${this.sessionId}`;
 		}
 
 		getRatingSubmittedKey() {
-			return `witzo_chat_rating_submitted_${this.sessionId}`;
+			return `konvoq_chat_rating_submitted_${this.sessionId}`;
 		}
 
 		getRatingShownState() {
@@ -287,7 +287,7 @@
 		}
 
 		getLanguageStorageKey() {
-			return `witzo_chat_language_${this.widgetKey || "default"}`;
+			return `konvoq_chat_language_${this.widgetKey || "default"}`;
 		}
 
 		initializeLanguagePreference() {
@@ -775,7 +775,7 @@
                 <!-- Messages will be appended here -->
             </div>
 
-            <!-- Contact Form (basic plan — shown when conversation limit hit) -->
+            <!-- Contact Form (basic plan â€” shown when conversation limit hit) -->
             <div id="contactFormSlot" class="contact-form hidden">
               <h3>Get in Touch</h3>
               <p>Our team will respond as soon as possible.</p>
@@ -818,8 +818,8 @@
             <div class="chat-footer">
                 <h3 class="powered-by">
                 powered by 
-                <a href="https://witzo.ai/" target="_blank" rel="noopener noreferrer" class="powered-by-brand">
-                    witzo
+                <a href="https://konvoq.ai/" target="_blank" rel="noopener noreferrer" class="powered-by-brand">
+                    konvoq
                 </a>
                 </h3>
             </div>
@@ -1084,7 +1084,7 @@
 					) {
 						this.successfulChatCount++;
 						sessionStorage.setItem(
-							"witzo_chat_count",
+							"konvoq_chat_count",
 							`${this.successfulChatCount}`,
 						);
 					}
@@ -1107,7 +1107,7 @@
 						if (result.sessionId) {
 							this.sessionId = result.sessionId;
 							sessionStorage.setItem(
-								"witzo_chat_session_token",
+								"konvoq_chat_session_token",
 								result.sessionId,
 							);
 							this.ratingShown =
@@ -1120,7 +1120,7 @@
 					}
 					this.successfulChatCount++;
 					sessionStorage.setItem(
-						"witzo_chat_count",
+						"konvoq_chat_count",
 						`${this.successfulChatCount}`,
 					);
 					this.appendBotReply(
@@ -1315,7 +1315,7 @@
 			if (donePayload && donePayload.sessionId) {
 				this.sessionId = donePayload.sessionId;
 				sessionStorage.setItem(
-					"witzo_chat_session_token",
+					"konvoq_chat_session_token",
 					donePayload.sessionId,
 				);
 				this.ratingShown =
@@ -1442,7 +1442,7 @@
 					);
 				}
 			} catch (e) {
-				// Non-fatal — silently ignore
+				// Non-fatal â€” silently ignore
 			}
 		}
 
@@ -1509,7 +1509,7 @@
 				);
 				if (resp.ok) {
 					this.elements.contactFormSlot.innerHTML =
-						'<div class="contact-form-success">✓ Message sent! We\'ll be in touch soon.</div>';
+						'<div class="contact-form-success">âœ“ Message sent! We\'ll be in touch soon.</div>';
 				} else {
 					if (this.elements.cfSubmit) {
 						this.elements.cfSubmit.disabled = false;
@@ -1582,10 +1582,11 @@
 	}
 
 	// Register the custom element
-	if (!customElements.get("witzo-chat")) {
+	if (!customElements.get("konvoq-chat")) {
 		customElements.define(
-			"witzo-chat",
-			WitzoChatWidget,
+			"konvoq-chat",
+			KonvoqChatWidget,
 		);
 	}
 })();
+

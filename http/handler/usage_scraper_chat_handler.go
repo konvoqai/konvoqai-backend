@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"database/sql"
@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func (c *Controller) GetUsage(w http.ResponseWriter, _ *http.Request, _ TokenClaims, user UserRecord) {
+func (c *Handler) GetUsage(w http.ResponseWriter, _ *http.Request, _ TokenClaims, user UserRecord) {
 	var remaining interface{}
 	var atLimit bool
 	if user.ConversationsLimit.Valid {
@@ -38,7 +38,7 @@ func nullableInt(v sql.NullInt64) interface{} {
 	return v.Int64
 }
 
-func (c *Controller) Overview(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) Overview(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	var chats, leads, sources, widgetViews, widgetMessages, ratings int
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE user_id=$1 AND is_deleted=FALSE`, claims.UserID).Scan(&chats)
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM leads WHERE user_id=$1`, claims.UserID).Scan(&leads)
@@ -56,7 +56,7 @@ func (c *Controller) Overview(w http.ResponseWriter, _ *http.Request, claims Tok
 	}})
 }
 
-func (c *Controller) Scrape(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) Scrape(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		URL string `json:"url"`
 	}
@@ -79,7 +79,7 @@ func (c *Controller) Scrape(w http.ResponseWriter, r *http.Request, claims Token
 	jsonOK(w, map[string]interface{}{"success": true, "message": "scrape queued", "url": body.URL})
 }
 
-func (c *Controller) QueryDocuments(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) QueryDocuments(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		Query string `json:"query"`
 	}
@@ -98,7 +98,7 @@ func (c *Controller) QueryDocuments(w http.ResponseWriter, r *http.Request, clai
 	jsonOK(w, map[string]interface{}{"success": true, "answer": answer, "documentsSearched": sources + docs, "matches": matches})
 }
 
-func (c *Controller) DeleteSource(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) DeleteSource(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	url := r.URL.Query().Get("url")
 	if url == "" {
 		var body struct {
@@ -119,20 +119,20 @@ func (c *Controller) DeleteSource(w http.ResponseWriter, r *http.Request, claims
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) DeleteAllSources(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) DeleteAllSources(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	_, _ = c.db.Exec(`DELETE FROM scraper_sources WHERE user_id=$1`, claims.UserID)
 	_, _ = c.db.Exec(`DELETE FROM documents WHERE user_id=$1`, claims.UserID)
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) SourceStats(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) SourceStats(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	var sources, docs int
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM scraper_sources WHERE user_id=$1`, claims.UserID).Scan(&sources)
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM documents WHERE user_id=$1`, claims.UserID).Scan(&docs)
 	jsonOK(w, map[string]interface{}{"success": true, "stats": map[string]int{"sources": sources, "documents": docs}})
 }
 
-func (c *Controller) GetSources(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) GetSources(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	rows, err := c.db.Query(`SELECT id,source_url,source_title,created_at FROM scraper_sources WHERE user_id=$1 ORDER BY created_at DESC`, claims.UserID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -149,7 +149,7 @@ func (c *Controller) GetSources(w http.ResponseWriter, _ *http.Request, claims T
 	}
 	jsonOK(w, map[string]interface{}{"success": true, "sources": items})
 }
-func (c *Controller) Chat(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) Chat(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		Message   string `json:"message"`
 		SessionID string `json:"sessionId"`
@@ -192,7 +192,7 @@ func (c *Controller) Chat(w http.ResponseWriter, r *http.Request, claims TokenCl
 	jsonOK(w, map[string]interface{}{"success": true, "sessionId": convID, "response": answer, "usage": map[string]interface{}{"conversationsUsed": used, "conversationsLimit": nullableInt(limit)}})
 }
 
-func (c *Controller) ChatSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) ChatSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	rows, err := c.db.Query(`SELECT id,status,message_count,last_message_preview,last_message_at,created_at,updated_at FROM chat_conversations WHERE user_id=$1 AND is_deleted=FALSE ORDER BY last_message_at DESC`, claims.UserID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -211,7 +211,7 @@ func (c *Controller) ChatSessions(w http.ResponseWriter, _ *http.Request, claims
 	jsonOK(w, map[string]interface{}{"success": true, "sessions": items})
 }
 
-func (c *Controller) ChatSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) ChatSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	sid := r.PathValue("sessionId")
 	var exists bool
 	_ = c.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM chat_conversations WHERE id=$1 AND user_id=$2 AND is_deleted=FALSE)`, sid, claims.UserID).Scan(&exists)
@@ -235,18 +235,18 @@ func (c *Controller) ChatSession(w http.ResponseWriter, r *http.Request, claims 
 	jsonOK(w, map[string]interface{}{"success": true, "session": map[string]interface{}{"id": sid, "messages": msgs}})
 }
 
-func (c *Controller) ClearChatSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) ClearChatSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	sid := r.PathValue("sessionId")
 	_, _ = c.db.Exec(`UPDATE chat_conversations SET is_deleted=TRUE,status='closed',updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND user_id=$2`, sid, claims.UserID)
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) ClearUserSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) ClearUserSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	_, _ = c.db.Exec(`UPDATE chat_conversations SET is_deleted=TRUE,status='closed',updated_at=CURRENT_TIMESTAMP WHERE user_id=$1`, claims.UserID)
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) VerifyGoogle(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) VerifyGoogle(w http.ResponseWriter, r *http.Request) {
 	if err := c.RequireCSRF(r); err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return

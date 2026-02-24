@@ -8,7 +8,7 @@
 -- so this migration is an optional belt-and-suspenders layer for environments
 -- where pg_cron is enabled.
 
--- ─── Partition helper function ───────────────────────────────────────────────
+-- --- Partition helper function -----------------------------------------------
 
 CREATE OR REPLACE FUNCTION ensure_chat_message_partitions()
 RETURNS void
@@ -39,7 +39,7 @@ $$;
 -- Run immediately so the current migration also backfills any missing partitions
 SELECT ensure_chat_message_partitions();
 
--- ─── pg_cron schedule (only if extension is available) ───────────────────────
+-- --- pg_cron schedule (only if extension is available) -----------------------
 --
 -- pg_cron must be in shared_preload_libraries and the extension must be
 -- installed.  The DO block is wrapped in an exception handler so the migration
@@ -58,7 +58,7 @@ BEGIN
       SELECT 1 FROM cron.job WHERE jobname = 'ensure-chat-partitions'
     );
 
-    -- Run on the 20th of every month at 00:05 UTC — well before the new month
+    -- Run on the 20th of every month at 00:05 UTC � well before the new month
     PERFORM cron.schedule(
       'ensure-chat-partitions',
       '5 0 20 * *',
@@ -67,11 +67,11 @@ BEGIN
 
     RAISE NOTICE 'pg_cron schedule "ensure-chat-partitions" created.';
   ELSE
-    RAISE NOTICE 'pg_cron extension not found — partition creation is handled by the Node.js maintenanceWorker instead.';
+    RAISE NOTICE 'pg_cron extension not found � partition creation is handled by the Node.js maintenanceWorker instead.';
   END IF;
 END $$;
 
--- ─── widget_analytics cleanup function ───────────────────────────────────────
+-- --- widget_analytics cleanup function ---------------------------------------
 
 CREATE OR REPLACE FUNCTION cleanup_old_widget_analytics(retention_days INTEGER DEFAULT 90)
 RETURNS INTEGER

@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord, error) {
+func (c *Handler) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord, error) {
 	var emptyClaims TokenClaims
 	var emptyUser UserRecord
 	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -54,7 +54,7 @@ func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord,
 	return *claims, user, nil
 }
 
-func (c *Controller) ValidateAdminRequest(r *http.Request) error {
+func (c *Handler) ValidateAdminRequest(r *http.Request) error {
 	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if raw == "" {
 		return errors.New("admin authentication required")
@@ -69,7 +69,7 @@ func (c *Controller) ValidateAdminRequest(r *http.Request) error {
 	return nil
 }
 
-func (c *Controller) RequireCSRF(r *http.Request) error {
+func (c *Handler) RequireCSRF(r *http.Request) error {
 	token := r.Header.Get("X-CSRF-Token")
 	if token == "" {
 		return errors.New("missing csrf token")
@@ -87,7 +87,7 @@ func (c *Controller) RequireCSRF(r *http.Request) error {
 	return nil
 }
 
-func (c *Controller) createToken(userID, email string, sessionID int64, typ string, secret string, ttl time.Duration) (string, time.Time, error) {
+func (c *Handler) createToken(userID, email string, sessionID int64, typ string, secret string, ttl time.Duration) (string, time.Time, error) {
 	exp := time.Now().Add(ttl)
 	claims := TokenClaims{UserID: userID, Email: email, SessionID: sessionID, Type: typ, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(exp), IssuedAt: jwt.NewNumericDate(time.Now())}}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -204,7 +204,7 @@ func docFromHeader(h *multipart.FileHeader) (string, int64, string) {
 
 var startedAt = time.Now()
 
-func (c *Controller) GetCSRFToken(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) GetCSRFToken(w http.ResponseWriter, r *http.Request) {
 	token := randomID("csrf")
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -213,7 +213,7 @@ func (c *Controller) GetCSRFToken(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "csrfToken": token})
 }
 
-func (c *Controller) RequestCode(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) RequestCode(w http.ResponseWriter, r *http.Request) {
 	if err := c.RequireCSRF(r); err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
@@ -266,7 +266,7 @@ func (c *Controller) RequestCode(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "message": "Verification code sent", "devCode": code, "expiresIn": c.cfg.VerifyCodeMinutes * 60})
 }
 
-func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	if err := c.RequireCSRF(r); err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
@@ -381,7 +381,7 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "message": "Login successful", "accessToken": accessToken, "refreshToken": refreshToken, "user": userResponse(updatedUser, sessionID)})
 }
 
-func (c *Controller) RefreshToken(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	if err := c.RequireCSRF(r); err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
@@ -432,26 +432,26 @@ func (c *Controller) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: newRefresh, HttpOnly: true, Path: "/", Expires: refreshExp})
 	jsonOK(w, map[string]interface{}{"success": true, "accessToken": newAccess, "newRefreshToken": newRefresh})
 }
-func (c *Controller) Logout(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) Logout(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	_, _ = c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE id=$1`, claims.SessionID)
 	http.SetCookie(w, &http.Cookie{Name: "witzo_access_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
 	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
 	jsonOK(w, map[string]interface{}{"success": true, "message": "Logged out"})
 }
 
-func (c *Controller) Me(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) Me(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
 	jsonOK(w, map[string]interface{}{"success": true, "user": userResponse(user, claims.SessionID)})
 }
 
-func (c *Controller) ValidateSession(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) ValidateSession(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
 	jsonOK(w, map[string]interface{}{"success": true, "valid": true, "user": userResponse(user, claims.SessionID)})
 }
 
-func (c *Controller) ProfileStatus(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) ProfileStatus(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
 	jsonOK(w, map[string]interface{}{"success": true, "profileCompleted": user.ProfileCompleted, "plan": user.PlanType, "user": userResponse(user, claims.SessionID)})
 }
 
-func (c *Controller) UpdateProfile(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		FullName       string `json:"full_name"`
 		CompanyName    string `json:"company_name"`
@@ -499,7 +499,7 @@ func nullable(v string) interface{} {
 	return t
 }
 
-func (c *Controller) GetSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) GetSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	rows, err := c.db.Query(`SELECT id,user_id,created_at,access_token_expires_at,refresh_token_expires_at,ip_address,user_agent,is_revoked FROM sessions WHERE user_id=$1 ORDER BY created_at DESC`, claims.UserID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -519,7 +519,7 @@ func (c *Controller) GetSessions(w http.ResponseWriter, _ *http.Request, claims 
 	jsonOK(w, map[string]interface{}{"success": true, "sessions": items})
 }
 
-func (c *Controller) RevokeSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) RevokeSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	sid := r.PathValue("sessionId")
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE id=$1 AND user_id=$2`, sid, claims.UserID)
 	if err != nil {
@@ -529,7 +529,7 @@ func (c *Controller) RevokeSession(w http.ResponseWriter, r *http.Request, claim
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) RevokeAllOtherSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) RevokeAllOtherSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE user_id=$1 AND id <> $2`, claims.UserID, claims.SessionID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -538,7 +538,7 @@ func (c *Controller) RevokeAllOtherSessions(w http.ResponseWriter, _ *http.Reque
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) LogoutAll(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) LogoutAll(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE user_id=$1`, claims.UserID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")

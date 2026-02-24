@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"bytes"
@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-func (c *Controller) sendVerificationEmail(email, code string) {
+func (c *Handler) sendVerificationEmail(email, code string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
@@ -27,7 +27,7 @@ func (c *Controller) sendVerificationEmail(email, code string) {
 	c.sendEmail(email, subject, html, text)
 }
 
-func (c *Controller) sendWelcomeEmail(email string) {
+func (c *Handler) sendWelcomeEmail(email string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
@@ -37,7 +37,7 @@ func (c *Controller) sendWelcomeEmail(email string) {
 	c.sendEmail(email, subject, html, text)
 }
 
-func (c *Controller) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerName string) {
+func (c *Handler) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerName string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
@@ -51,7 +51,7 @@ func (c *Controller) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerNam
 	c.sendEmail(visitorEmail, subject, html, text)
 }
 
-func (c *Controller) sendEmail(to, subject, htmlBody, textBody string) {
+func (c *Handler) sendEmail(to, subject, htmlBody, textBody string) {
 	go func() {
 		from := c.cfg.EmailFrom
 		if from == "" {
@@ -74,7 +74,7 @@ func (c *Controller) sendEmail(to, subject, htmlBody, textBody string) {
 	}()
 }
 
-// ── Email HTML builders ────────────────────────────────────────────────────────
+// -- Email HTML builders --------------------------------------------------------
 
 func buildVerificationEmailHTML(code string, expiryMinutes int) string {
 	return `<!DOCTYPE html>
@@ -230,7 +230,7 @@ func buildFollowUpEmailText(visitorName, from string) string {
 }
 
 // displayNameFromEmail converts an email local-part into a presentable display name.
-// e.g. "john.doe@example.com" → "John Doe"
+// e.g. "john.doe@example.com" ? "John Doe"
 func displayNameFromEmail(email string) string {
 	parts := strings.SplitN(email, "@", 2)
 	local := parts[0]
@@ -252,7 +252,7 @@ func displayNameFromEmail(email string) string {
 	return result
 }
 
-func (c *Controller) openAIChat(message string) (string, error) {
+func (c *Handler) openAIChat(message string) (string, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return "", nil
 	}
@@ -294,7 +294,7 @@ func (c *Controller) openAIChat(message string) (string, error) {
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
 }
 
-func (c *Controller) openAIAnswerWithContext(query string, matches []map[string]interface{}) (string, error) {
+func (c *Handler) openAIAnswerWithContext(query string, matches []map[string]interface{}) (string, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return "", nil
 	}
@@ -327,7 +327,7 @@ func (c *Controller) openAIAnswerWithContext(query string, matches []map[string]
 	return c.openAIChat(prompt)
 }
 
-func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
+func (c *Handler) openAIEmbedding(input string) ([]float64, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return nil, nil
 	}
@@ -361,14 +361,14 @@ func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
 	return out.Data[0].Embedding, nil
 }
 
-func (c *Controller) pineconeHost() string {
+func (c *Handler) pineconeHost() string {
 	if strings.TrimSpace(c.cfg.PineconeIndexName) == "" || strings.TrimSpace(c.cfg.PineconeEnvironment) == "" {
 		return ""
 	}
 	return fmt.Sprintf("https://%s-%s.svc.pinecone.io", c.cfg.PineconeIndexName, c.cfg.PineconeEnvironment)
 }
 
-func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
+func (c *Handler) pineconeUpsert(userID, sourceURL, content string) error {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil
 	}
@@ -411,7 +411,7 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	return nil
 }
 
-func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string]interface{}, error) {
+func (c *Handler) pineconeQuery(userID, query string, topK int) ([]map[string]interface{}, error) {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil, nil
 	}
@@ -458,7 +458,7 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 	return out.Matches, nil
 }
 
-func (c *Controller) extractTextFromURL(source string) (string, error) {
+func (c *Handler) extractTextFromURL(source string) (string, error) {
 	u, err := url.Parse(source)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", fmt.Errorf("invalid url")
@@ -485,7 +485,7 @@ func (c *Controller) extractTextFromURL(source string) (string, error) {
 	return text, nil
 }
 
-func (c *Controller) queueWebhookEvent(userID, leadID, eventType string, payload map[string]interface{}) {
+func (c *Handler) queueWebhookEvent(userID, leadID, eventType string, payload map[string]interface{}) {
 	b, _ := json.Marshal(payload)
 	_, _ = c.db.Exec(`INSERT INTO lead_webhook_events (user_id,lead_id,config_id,event_type,payload,status,max_attempts)
 		SELECT $1,$2,c.id,$3,$4::jsonb,'pending',8 FROM lead_webhook_configs c WHERE c.user_id=$1 AND c.is_active=TRUE`, userID, nullable(leadID), eventType, string(b))
@@ -497,7 +497,7 @@ func webhookSignature(secret, timestamp, body string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
+func (c *Handler) processPendingWebhookEvents(ctx context.Context) {
 	rows, err := c.db.QueryContext(ctx, `SELECT e.id,e.user_id,e.config_id,e.event_type,e.payload::text,e.attempts,e.max_attempts,c.webhook_url,c.signing_secret
 		FROM lead_webhook_events e JOIN lead_webhook_configs c ON c.id=e.config_id
 		WHERE e.status IN ('pending','retrying') AND e.next_attempt_at <= CURRENT_TIMESTAMP AND c.is_active=TRUE
@@ -548,7 +548,7 @@ func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
 	}
 }
 
-func (c *Controller) flushWidgetAnalytics(ctx context.Context) {
+func (c *Handler) flushWidgetAnalytics(ctx context.Context) {
 	if c.redis == nil {
 		return
 	}
@@ -573,7 +573,7 @@ func (c *Controller) flushWidgetAnalytics(ctx context.Context) {
 	}
 }
 
-func (c *Controller) StartBackgroundWorkers(ctx context.Context) {
+func (c *Handler) StartBackgroundWorkers(ctx context.Context) {
 	if c.cfg.AnalyticsFlushIntervalSec <= 0 {
 		c.cfg.AnalyticsFlushIntervalSec = 60
 	}

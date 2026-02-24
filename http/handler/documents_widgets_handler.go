@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func (c *Controller) UploadDocument(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) UploadDocument(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	name, size, mime, err := readUploadedFile(r, "document")
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -42,7 +42,7 @@ func (c *Controller) UploadDocument(w http.ResponseWriter, r *http.Request, clai
 	jsonOK(w, map[string]interface{}{"success": true, "document": map[string]interface{}{"id": id, "fileName": name, "size": size, "mimeType": mime}})
 }
 
-func (c *Controller) UploadMultipleDocuments(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) UploadMultipleDocuments(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	if err := r.ParseMultipartForm(40 << 20); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid multipart form")
 		return
@@ -102,7 +102,7 @@ func extractCSVText(data []byte) string {
 	}
 	return strings.TrimSpace(sb.String())
 }
-func (c *Controller) CreateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) CreateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		Name        string                 `json:"name"`
 		Theme       string                 `json:"theme"`
@@ -138,7 +138,7 @@ func coalesce(v, d string) string {
 	return v
 }
 
-func (c *Controller) GetWidget(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) GetWidget(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	var id int64
 	var key, name string
 	var active bool
@@ -154,7 +154,7 @@ func (c *Controller) GetWidget(w http.ResponseWriter, _ *http.Request, claims To
 	jsonOK(w, map[string]interface{}{"success": true, "widget": map[string]interface{}{"id": id, "userId": claims.UserID, "widgetKey": key, "name": name, "isActive": active, "settings": cfg, "createdAt": created, "updatedAt": updated}})
 }
 
-func (c *Controller) UpdateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) UpdateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body map[string]interface{}
 	if err := decodeJSON(r, &body); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid payload")
@@ -170,7 +170,7 @@ func (c *Controller) UpdateWidget(w http.ResponseWriter, r *http.Request, claims
 	c.GetWidget(w, r, claims, UserRecord{})
 }
 
-func (c *Controller) RegenerateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) RegenerateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	newKey := randomID("wk")
 	_, err := c.db.Exec(`UPDATE widget_keys SET widget_key=$2,updated_at=CURRENT_TIMESTAMP WHERE user_id=$1`, claims.UserID, newKey)
 	if err != nil {
@@ -183,12 +183,12 @@ func (c *Controller) RegenerateWidget(w http.ResponseWriter, r *http.Request, cl
 	c.GetWidget(w, r, claims, UserRecord{})
 }
 
-func (c *Controller) DeleteWidget(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) DeleteWidget(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	_, _ = c.db.Exec(`DELETE FROM widget_keys WHERE user_id=$1`, claims.UserID)
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) WidgetAnalytics(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) WidgetAnalytics(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	limit := 100
 	if q := r.URL.Query().Get("limit"); q != "" {
 		if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= 500 {

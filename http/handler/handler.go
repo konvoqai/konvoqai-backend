@@ -1,17 +1,18 @@
-package controller
+package handler
 
 import (
 	"database/sql"
+	"net/http"
 	"time"
 
-	"golan-project/internal/config"
-	"golan-project/internal/controller/auth"
+	"konvoq-backend/config"
+	"konvoq-backend/http/handler/auth"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 )
 
-type Controller struct {
+type Handler struct {
 	cfg   config.Config
 	db    *sql.DB
 	redis *redis.Client
@@ -19,8 +20,8 @@ type Controller struct {
 	Auth *auth.Handler
 }
 
-func New(cfg config.Config, db *sql.DB, redis *redis.Client) *Controller {
-	c := &Controller{
+func New(cfg config.Config, db *sql.DB, redis *redis.Client) *Handler {
+	c := &Handler{
 		cfg:   cfg,
 		db:    db,
 		redis: redis,
@@ -56,4 +57,12 @@ type UserRecord struct {
 	ProfileCompleted      bool
 	ProfilePromptRequired sql.NullTime
 	ProfileCompletedAt    sql.NullTime
+}
+
+func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
+	h.Auth.Google(w, r)
+}
+
+func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
+	h.Auth.GoogleCallback(w, r)
 }

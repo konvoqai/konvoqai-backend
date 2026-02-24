@@ -3,12 +3,18 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"net"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
+
+	"konvoq-backend/envx"
 )
 
 type Config struct {
+	Environment string
+
 	Port   string
 	DBURL  string
 	DBHost string
@@ -49,6 +55,8 @@ type Config struct {
 
 	WebhookProcessIntervalSec int
 	AnalyticsFlushIntervalSec int
+
+	CORSAllowedOrigins []string
 }
 
 func getEnv(key, fallback string) string {
@@ -79,6 +87,25 @@ func getEnvBool(key string, fallback bool) bool {
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
+func getEnvList(key string, fallback []string) []string {
+	v := strings.TrimSpace(getEnv(key, ""))
+	if v == "" {
+		return fallback
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
+}
+
 func randomSecret() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -99,20 +126,28 @@ func requireSecret(key string) string {
 }
 
 func Load() Config {
+	_ = envx.LoadDotEnvIfPresent(".env")
+
 	dbPort := getEnvInt("DB_PORT", 5432)
 	dbHost := getEnv("DB_HOST", "localhost")
 	dbUser := getEnv("DB_USER", "postgres")
 	dbPass := getEnv("DB_PASSWORD", "postgres")
 	dbName := getEnv("DB_NAME", "auth_db")
 	dbURL := getEnv("DATABASE_URL", "")
-	if dbURL == "" {
-		dbURL = "postgres://" + dbUser + ":" + dbPass + "@" + dbHost + ":" + strconv.Itoa(dbPort) + "/" + dbName + "?sslmode=disable"
+	if hasExplicitDBParts() {
+		dbURL = buildDatabaseURL(dbHost, dbPort, dbName, dbUser, dbPass)
+	} else if dbURL != "" {
+		dbURL = applyDefaultSSLMode(dbURL)
+	} else {
+		dbURL = buildDatabaseURL(dbHost, dbPort, dbName, dbUser, dbPass)
 	}
 
 	redisHost := getEnv("REDIS_CACHE_HOST", getEnv("REDIS_HOST", "localhost"))
 	redisPort := getEnvInt("REDIS_CACHE_PORT", getEnvInt("REDIS_PORT", 6379))
 
 	return Config{
+		Environment: strings.ToLower(getEnv("NODE_ENV", "development")),
+
 		Port:   getEnv("PORT", "8080"),
 		DBURL:  dbURL,
 		DBHost: dbHost,
@@ -134,9 +169,9 @@ func Load() Config {
 		RefreshTokenDays:    getEnvInt("REFRESH_TOKEN_EXPIRY_DAYS", 7),
 		VerifyCodeMinutes:   getEnvInt("VERIFICATION_CODE_EXPIRY_MINUTES", 10),
 		MaxVerifyAttempts:   getEnvInt("MAX_VERIFICATION_ATTEMPTS", 5),
-		AdminEmail:          getEnv("ADMIN_EMAIL", "admin@witzo.local"),
+		AdminEmail:          getEnv("ADMIN_EMAIL", "admin@konvoq.local"),
 		AdminPassword:       getEnv("ADMIN_PASSWORD", "change-me-admin-password"),
-		EnableAutoMigration: getEnvBool("AUTO_MIGRATE", true),
+		EnableAutoMigration: getEnvBool("AUTO_MIGRATE", false),
 
 		OpenAIAPIKey: getEnv("OPENAI_API_KEY", ""),
 		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -149,9 +184,59 @@ func Load() Config {
 		EmailPort:     getEnvInt("EMAIL_PORT", 587),
 		EmailUser:     getEnv("EMAIL_USER", ""),
 		EmailPassword: getEnv("EMAIL_PASSWORD", ""),
-		EmailFrom:     getEnv("EMAIL_FROM", getEnv("EMAIL_FROM_ADDRESS", "noreply@witzo.ai")),
+		EmailFrom:     getEnv("EMAIL_FROM", getEnv("EMAIL_FROM_ADDRESS", "noreply@konvoq.ai")),
 
 		WebhookProcessIntervalSec: getEnvInt("WEBHOOK_PROCESS_INTERVAL_SEC", 30),
 		AnalyticsFlushIntervalSec: getEnvInt("ANALYTICS_FLUSH_INTERVAL_SEC", 60),
+
+		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{"*"}),
 	}
+}
+
+func buildDatabaseURL(host string, port int, dbName, user, pass string) string {
+	u := &neturl.URL{
+		Scheme: "postgres",
+		User:   neturl.UserPassword(user, pass),
+		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
+		Path:   "/" + dbName,
+	}
+	q := u.Query()
+	if isLocalHost(host) {
+		q.Set("sslmode", "disable")
+	} else {
+		q.Set("sslmode", "require")
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func applyDefaultSSLMode(dbURL string) string {
+	u, err := neturl.Parse(strings.TrimSpace(dbURL))
+	if err != nil {
+		return dbURL
+	}
+	q := u.Query()
+	if q.Get("sslmode") != "" {
+		return u.String()
+	}
+	if isLocalHost(u.Hostname()) {
+		q.Set("sslmode", "disable")
+	} else {
+		q.Set("sslmode", "require")
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func isLocalHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h == "" || h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+func hasExplicitDBParts() bool {
+	return strings.TrimSpace(os.Getenv("DB_HOST")) != "" ||
+		strings.TrimSpace(os.Getenv("DB_PORT")) != "" ||
+		strings.TrimSpace(os.Getenv("DB_NAME")) != "" ||
+		strings.TrimSpace(os.Getenv("DB_USER")) != "" ||
+		strings.TrimSpace(os.Getenv("DB_PASSWORD")) != ""
 }

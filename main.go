@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"golan-project/app"
+	"konvoq-backend/app"
 )
 
 func main() {

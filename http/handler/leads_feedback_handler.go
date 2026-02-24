@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"database/sql"
@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func (c *Controller) ListLeads(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) ListLeads(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	rows, err := c.db.Query(`SELECT id,name,email,phone,status,created_at FROM leads WHERE user_id=$1 ORDER BY created_at DESC`, claims.UserID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -25,7 +25,7 @@ func (c *Controller) ListLeads(w http.ResponseWriter, _ *http.Request, claims To
 	jsonOK(w, map[string]interface{}{"success": true, "leads": items})
 }
 
-func (c *Controller) GetLead(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) GetLead(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	id := r.PathValue("id")
 	var name, email, phone, status sql.NullString
 	var created time.Time
@@ -37,7 +37,7 @@ func (c *Controller) GetLead(w http.ResponseWriter, r *http.Request, claims Toke
 	jsonOK(w, map[string]interface{}{"success": true, "lead": map[string]interface{}{"id": id, "name": nullString(name), "email": nullString(email), "phone": nullString(phone), "status": nullString(status), "createdAt": created}})
 }
 
-func (c *Controller) UpdateLeadStatus(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) UpdateLeadStatus(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	id := r.PathValue("id")
 	var body struct {
 		Status string `json:"status"`
@@ -54,12 +54,12 @@ func (c *Controller) UpdateLeadStatus(w http.ResponseWriter, r *http.Request, cl
 	c.GetLead(w, r, claims, UserRecord{})
 }
 
-func (c *Controller) DeleteLead(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) DeleteLead(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	id := r.PathValue("id")
 	_, _ = c.db.Exec(`DELETE FROM leads WHERE id=$1 AND user_id=$2`, id, claims.UserID)
 	jsonOK(w, map[string]interface{}{"success": true})
 }
-func (c *Controller) GetLeadWebhook(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) GetLeadWebhook(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
 	if user.PlanType != "enterprise" {
 		jsonErr(w, http.StatusForbidden, "This feature is available only for enterprise plan")
 		return
@@ -79,7 +79,7 @@ func (c *Controller) GetLeadWebhook(w http.ResponseWriter, _ *http.Request, clai
 	jsonOK(w, map[string]interface{}{"success": true, "config": map[string]interface{}{"id": id, "webhookUrl": url, "isActive": active, "createdAt": created, "updatedAt": updated}})
 }
 
-func (c *Controller) UpsertLeadWebhook(w http.ResponseWriter, r *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) UpsertLeadWebhook(w http.ResponseWriter, r *http.Request, claims TokenClaims, user UserRecord) {
 	if user.PlanType != "enterprise" {
 		jsonErr(w, http.StatusForbidden, "This feature is available only for enterprise plan")
 		return
@@ -106,7 +106,7 @@ func (c *Controller) UpsertLeadWebhook(w http.ResponseWriter, r *http.Request, c
 	c.GetLeadWebhook(w, r, claims, user)
 }
 
-func (c *Controller) LeadWebhookTest(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) LeadWebhookTest(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
 	if user.PlanType != "enterprise" {
 		jsonErr(w, http.StatusForbidden, "This feature is available only for enterprise plan")
 		return
@@ -119,7 +119,7 @@ func (c *Controller) LeadWebhookTest(w http.ResponseWriter, _ *http.Request, cla
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) ListWebhookEvents(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) ListWebhookEvents(w http.ResponseWriter, _ *http.Request, claims TokenClaims, user UserRecord) {
 	if user.PlanType != "enterprise" {
 		jsonErr(w, http.StatusForbidden, "This feature is available only for enterprise plan")
 		return
@@ -154,7 +154,7 @@ func nullableInt64(v sql.NullInt64) interface{} {
 	return v.Int64
 }
 
-func (c *Controller) RetryWebhookEvent(w http.ResponseWriter, r *http.Request, claims TokenClaims, user UserRecord) {
+func (c *Handler) RetryWebhookEvent(w http.ResponseWriter, r *http.Request, claims TokenClaims, user UserRecord) {
 	if user.PlanType != "enterprise" {
 		jsonErr(w, http.StatusForbidden, "This feature is available only for enterprise plan")
 		return
@@ -164,7 +164,7 @@ func (c *Controller) RetryWebhookEvent(w http.ResponseWriter, r *http.Request, c
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) ListFeedback(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) ListFeedback(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
 	rows, err := c.db.Query(`SELECT id,type,title,message,page_path,created_at FROM feedback_suggestions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200`, claims.UserID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -182,7 +182,7 @@ func (c *Controller) ListFeedback(w http.ResponseWriter, _ *http.Request, claims
 	jsonOK(w, map[string]interface{}{"success": true, "feedback": items})
 }
 
-func (c *Controller) CreateFeedback(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		Type    string `json:"type"`
 		Title   string `json:"title"`

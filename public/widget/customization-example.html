@@ -237,12 +237,12 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎨 Widget Customization Dashboard</h1>
-            <p>Customize your Witzo Chat Widget - All changes are saved via API</p>
+            <h1>ðŸŽ¨ Widget Customization Dashboard</h1>
+            <p>Customize your Konvoq Chat Widget - All changes are saved via API</p>
         </div>
 
         <div class="preview-note">
-            <strong>📝 Note:</strong> This is a UI example. Connect it to your backend API endpoints to save customizations to the database.
+            <strong>ðŸ“ Note:</strong> This is a UI example. Connect it to your backend API endpoints to save customizations to the database.
         </div>
 
         <div class="card">
@@ -339,24 +339,24 @@ Got questions about Zycus? Ask me anything and I'll provide you with the info yo
                 </div>
 
                 <div class="button-group">
-                    <button type="button" class="btn btn-primary" onclick="saveConfiguration()">💾 Save Configuration</button>
-                    <button type="button" class="btn btn-secondary" onclick="generateEmbedCode()">📋 Generate Embed Code</button>
+                    <button type="button" class="btn btn-primary" onclick="saveConfiguration()">ðŸ’¾ Save Configuration</button>
+                    <button type="button" class="btn btn-secondary" onclick="generateEmbedCode()">ðŸ“‹ Generate Embed Code</button>
                 </div>
             </form>
         </div>
 
         <div class="card">
             <div class="embed-code">
-                <h3>📦 Your Single-Line Embed Code</h3>
+                <h3>ðŸ“¦ Your Single-Line Embed Code</h3>
                 <p style="margin-bottom: 10px; color: #666;">Copy this code and paste it on your website (before closing &lt;/body&gt; tag)</p>
                 <div class="code-block" id="embedCodeBlock">
 &lt;script src="http://localhost:3053/api/v1/embed/wk_YOUR_WIDGET_KEY.js"&gt;&lt;/script&gt;
                 </div>
-                <button class="copy-btn" onclick="copyEmbedCode()">📋 Copy to Clipboard</button>
+                <button class="copy-btn" onclick="copyEmbedCode()">ðŸ“‹ Copy to Clipboard</button>
             </div>
 
             <div class="info-box">
-                <h4>🔑 How to Get Your Widget Key</h4>
+                <h4>ðŸ”‘ How to Get Your Widget Key</h4>
                 <p>
                     1. Call <code>POST /api/auth/widget/create</code> with your configuration<br>
                     2. You'll receive a unique widget key like <code>wk_abc123...</code><br>
@@ -450,12 +450,12 @@ console.log('Embed Code:', data.data.embedCode);
 
             const data = await response.json();
             if (data.success) {
-                alert('✅ Widget configuration saved successfully!');
+                alert('âœ… Widget configuration saved successfully!');
                 document.getElementById('embedCodeBlock').textContent = data.data.embedCode;
             }
             */
 
-            alert('✅ Configuration saved!\n\n(In production, this would call your API endpoint)');
+            alert('âœ… Configuration saved!\n\n(In production, this would call your API endpoint)');
             generateEmbedCode();
         }
 
@@ -479,15 +479,16 @@ console.log('Widget Key:', data.data.widgetKey);
 console.log('Embed Code:', data.data.embedCode);`;
 
             document.getElementById('apiRequestExample').textContent = apiRequestCode;
-            alert('📋 API request example updated! Scroll down to see it.');
+            alert('ðŸ“‹ API request example updated! Scroll down to see it.');
         }
 
         function copyEmbedCode() {
             const code = document.getElementById('embedCodeBlock').textContent;
             navigator.clipboard.writeText(code).then(() => {
-                alert('✅ Embed code copied to clipboard!');
+                alert('âœ… Embed code copied to clipboard!');
             });
         }
     </script>
 </body>
 </html>
+

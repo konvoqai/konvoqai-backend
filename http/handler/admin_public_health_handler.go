@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func (c *Controller) AdminLogin(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -30,7 +30,7 @@ func (c *Controller) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "token": s})
 }
 
-func (c *Controller) AdminDashboard(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) AdminDashboard(w http.ResponseWriter, _ *http.Request) {
 	var users, sessions, leads int
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users)
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE is_revoked=FALSE`).Scan(&sessions)
@@ -38,7 +38,7 @@ func (c *Controller) AdminDashboard(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "dashboard": map[string]int{"users": users, "sessions": sessions, "leads": leads}})
 }
 
-func (c *Controller) AdminInsights(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) AdminInsights(w http.ResponseWriter, _ *http.Request) {
 	rows, err := c.db.Query(`SELECT plan_type,COUNT(*) FROM users GROUP BY plan_type`)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -55,7 +55,7 @@ func (c *Controller) AdminInsights(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "insights": map[string]interface{}{"plans": plans}})
 }
 
-func (c *Controller) AdminUsers(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) AdminUsers(w http.ResponseWriter, _ *http.Request) {
 	rows, err := c.db.Query(`SELECT id,email,is_verified,plan_type,login_count,profile_completed,created_at,last_login FROM users ORDER BY created_at DESC LIMIT 500`)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "db error")
@@ -75,7 +75,7 @@ func (c *Controller) AdminUsers(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "users": items})
 }
 
-func (c *Controller) AdminResetUsage(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) AdminResetUsage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		UserID string `json:"userId"`
 	}
@@ -87,7 +87,7 @@ func (c *Controller) AdminResetUsage(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) AdminForceLogout(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) AdminForceLogout(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		UserID string `json:"userId"`
 	}
@@ -99,7 +99,7 @@ func (c *Controller) AdminForceLogout(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) AdminSetPlan(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) AdminSetPlan(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		UserID string `json:"userId"`
 		Plan   string `json:"plan"`
@@ -117,7 +117,7 @@ func (c *Controller) AdminSetPlan(w http.ResponseWriter, r *http.Request) {
 	_, _ = c.db.Exec(`UPDATE users SET plan_type=$2,conversations_limit=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, body.UserID, body.Plan, limit)
 	jsonOK(w, map[string]interface{}{"success": true})
 }
-func (c *Controller) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("widgetKey")
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -146,7 +146,7 @@ func (c *Controller) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write(b)
 }
 
-func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		WidgetKey string `json:"widgetKey"`
 		Message   string `json:"message"`
@@ -190,12 +190,12 @@ func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "sessionId": sessionID, "response": answer})
 }
 
-func (c *Controller) EmbedJS(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) EmbedJS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
 	_, _ = w.Write([]byte("console.log('Witzo embed loader (Go)');"))
 }
 
-func (c *Controller) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/api/v1/embed/")
 	if !strings.HasSuffix(key, ".js") || key == ".js" {
 		jsonErr(w, http.StatusNotFound, "embed script not found")
@@ -206,7 +206,7 @@ func (c *Controller) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(fmt.Sprintf("console.log('Witzo widget loaded: %s');", key)))
 }
 
-func (c *Controller) PublicContact(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) PublicContact(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		WidgetKey string `json:"widgetKey"`
 		SessionID string `json:"sessionId"`
@@ -268,7 +268,7 @@ func (c *Controller) PublicContact(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "lead": map[string]interface{}{"id": leadID}})
 }
 
-func (c *Controller) PublicRating(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) PublicRating(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		WidgetKey string `json:"widgetKey"`
 		SessionID string `json:"sessionId"`
@@ -300,11 +300,11 @@ func (c *Controller) PublicRating(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "rating": body.Rating})
 }
 
-func (c *Controller) Health(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, map[string]interface{}{"status": "healthy", "timestamp": time.Now().UTC(), "uptime": time.Since(startedAt).Seconds()})
 }
 
-func (c *Controller) HealthDetailed(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) HealthDetailed(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	dbStatus := "healthy"
@@ -327,7 +327,7 @@ func (c *Controller) HealthDetailed(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": status, "dependencies": map[string]string{"database": dbStatus, "redis": redisStatus}, "timestamp": time.Now().UTC()})
 }
 
-func (c *Controller) Ready(w http.ResponseWriter, r *http.Request) {
+func (c *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := c.db.PingContext(ctx); err != nil {
@@ -337,11 +337,11 @@ func (c *Controller) Ready(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"status": "ready", "timestamp": time.Now().UTC()})
 }
 
-func (c *Controller) Live(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) Live(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, map[string]interface{}{"status": "alive", "timestamp": time.Now().UTC()})
 }
 
-func (c *Controller) Metrics(w http.ResponseWriter, _ *http.Request) {
+func (c *Handler) Metrics(w http.ResponseWriter, _ *http.Request) {
 	var users, sessions int
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users)
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE is_revoked=FALSE`).Scan(&sessions)
