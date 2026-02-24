@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Go caches (don't bake into image)
+.gocache*/
+.gomodcache*/
+.tmpcache*/
+.tmpmod*/
+.smoke-gocache/
+
+# Smoke test artefacts
+.smoke-launch.*.ps1
+.smoke-server.*.log
+
+# Go backup files
+*.go.[0-9]*
+
+# Logs / uploads
+logs/
+uploads/
+
+# Claude AI
+.claude/
+
+# Docs / CI
+README.md
+.github/
