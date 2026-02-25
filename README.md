@@ -43,6 +43,13 @@ go run ./migrate
 - Route groups implemented: `/api/auth`, `/api/admin`, `/api/v1`, plus health routes.
 - CSRF flow is implemented using Redis (`/api/auth/csrf-token` + `X-CSRF-Token` header).
 - Auth/session, usage, chat storage, widget, leads, feedback, and admin endpoints use PostgreSQL.
+- Structured logging uses colorized pretty console output by default (development and production).
+- Optional logger env overrides:
+  - `LOG_LEVEL` (`debug` | `info` | `warn` | `error`)
+  - `LOG_FORMAT` (`text` or `json`, default `text`)
+  - `LOG_ADD_SOURCE` (`true`/`false`)
+  - `LOG_COLOR` (`true`/`false`, default `true`)
+  - `SERVICE_NAME` (log field for service identity)
 - Default admin credentials come from env:
   - `ADMIN_EMAIL` (default `admin@konvoq.local`)
   - `ADMIN_PASSWORD` (default `change-me-admin-password`)

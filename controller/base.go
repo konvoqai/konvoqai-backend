@@ -4,14 +4,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
 
+	"konvoq-backend/config"
 	"konvoq-backend/controller/auth"
 	"konvoq-backend/utils"
-	"konvoq-backend/config"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
@@ -19,17 +20,22 @@ import (
 
 // Controller holds all dependencies for request handlers.
 type Controller struct {
-	cfg   config.Config
-	db    *sql.DB
-	redis *redis.Client
-	Auth  *auth.Handler
+	cfg    config.Config
+	db     *sql.DB
+	redis  *redis.Client
+	logger *slog.Logger
+	Auth   *auth.Handler
 }
 
-func New(cfg config.Config, db *sql.DB, redisClient *redis.Client) *Controller {
+func New(cfg config.Config, db *sql.DB, redisClient *redis.Client, logger *slog.Logger) *Controller {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	c := &Controller{
-		cfg:   cfg,
-		db:    db,
-		redis: redisClient,
+		cfg:    cfg,
+		db:     db,
+		redis:  redisClient,
+		logger: logger.With("component", "controller"),
 	}
 	c.Auth = auth.New()
 	return c

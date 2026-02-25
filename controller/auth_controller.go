@@ -44,6 +44,7 @@ func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord,
 		if errors.Is(err, sql.ErrNoRows) {
 			return emptyClaims, emptyUser, errors.New("session not found or revoked")
 		}
+		c.logRequestError(r, "authenticate user query failed", err, "session_id", claims.SessionID, "user_id", claims.UserID)
 		return emptyClaims, emptyUser, err
 	}
 	return *claims, user, nil
@@ -77,6 +78,9 @@ func (c *Controller) RequireCSRF(r *http.Request) error {
 	defer cancel()
 	exists, err := c.redis.Exists(ctx, "csrf:"+token).Result()
 	if err != nil || exists == 0 {
+		if err != nil {
+			c.logRequestWarn(r, "csrf redis check failed", err)
+		}
 		return errors.New("invalid csrf token")
 	}
 	return nil
@@ -103,7 +107,9 @@ func (c *Controller) GetCSRFToken(w http.ResponseWriter, r *http.Request) {
 	token := utils.RandomID("csrf")
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	_ = c.redis.Set(ctx, "csrf:"+token, "1", 24*time.Hour).Err()
+	if err := c.redis.Set(ctx, "csrf:"+token, "1", 24*time.Hour).Err(); err != nil {
+		c.logRequestWarn(r, "csrf token cache set failed", err)
+	}
 	http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: token, Path: "/", HttpOnly: false, Expires: time.Now().Add(24 * time.Hour)})
 	utils.JSONOK(w, map[string]interface{}{"success": true, "csrfToken": token})
 }
@@ -123,6 +129,7 @@ func (c *Controller) RequestCode(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(body.Email))
 	tx, err := c.db.BeginTx(r.Context(), nil)
 	if err != nil {
+		c.logRequestError(r, "request code begin transaction failed", err, "email", email)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -134,6 +141,7 @@ func (c *Controller) RequestCode(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRow(`INSERT INTO users (email) VALUES ($1) RETURNING id`, email).Scan(&userID)
 	}
 	if err != nil {
+		c.logRequestError(r, "request code user lookup/create failed", err, "email", email)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -150,10 +158,12 @@ func (c *Controller) RequestCode(w http.ResponseWriter, r *http.Request) {
 	expires := time.Now().Add(time.Duration(c.cfg.VerifyCodeMinutes) * time.Minute)
 	_, err = tx.Exec(`INSERT INTO verification_codes (user_id,code,expires_at) VALUES ($1,$2,$3)`, userID, code, expires)
 	if err != nil {
+		c.logRequestError(r, "request code insert failed", err, "user_id", userID)
 		utils.JSONErr(w, http.StatusInternalServerError, "failed to create code")
 		return
 	}
 	if err := tx.Commit(); err != nil {
+		c.logRequestError(r, "request code transaction commit failed", err, "user_id", userID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -178,6 +188,7 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	firstSignup := false
 	tx, err := c.db.BeginTx(r.Context(), nil)
 	if err != nil {
+		c.logRequestError(r, "verify code begin transaction failed", err, "email", email)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -227,6 +238,7 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		profile_prompt_required_at = CASE WHEN (login_count + 1) > 3 AND profile_completed=FALSE THEN COALESCE(profile_prompt_required_at, CURRENT_TIMESTAMP) ELSE profile_prompt_required_at END
 		WHERE id=$1`, user.ID)
 	if err != nil {
+		c.logRequestError(r, "verify code user update failed", err, "user_id", user.ID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -235,23 +247,27 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	err = tx.QueryRow(`INSERT INTO sessions (user_id,access_token,refresh_token,access_token_expires_at,refresh_token_expires_at,ip_address,user_agent)
 		VALUES ($1,'pending','pending',NOW()+INTERVAL '15 minutes',NOW()+INTERVAL '7 days',$2,$3) RETURNING id`, user.ID, r.RemoteAddr, r.UserAgent()).Scan(&sessionID)
 	if err != nil {
+		c.logRequestError(r, "verify code session insert failed", err, "user_id", user.ID)
 		utils.JSONErr(w, http.StatusInternalServerError, "failed creating session")
 		return
 	}
 
 	accessToken, accessExp, err := c.createToken(user.ID, user.Email, sessionID, "access", c.cfg.JWTSecret, time.Duration(c.cfg.AccessTokenMinutes)*time.Minute)
 	if err != nil {
+		c.logRequestError(r, "verify code access token creation failed", err, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "token error")
 		return
 	}
 	refreshToken, refreshExp, err := c.createToken(user.ID, user.Email, sessionID, "refresh", c.cfg.JWTRefreshSecret, time.Duration(c.cfg.RefreshTokenDays)*24*time.Hour)
 	if err != nil {
+		c.logRequestError(r, "verify code refresh token creation failed", err, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "token error")
 		return
 	}
 	_, err = tx.Exec(`UPDATE sessions SET access_token=$1,refresh_token=$2,access_token_expires_at=$3,refresh_token_expires_at=$4 WHERE id=$5`,
 		utils.HashToken(accessToken), utils.HashToken(refreshToken), accessExp, refreshExp, sessionID)
 	if err != nil {
+		c.logRequestError(r, "verify code session token update failed", err, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "session update failed")
 		return
 	}
@@ -261,10 +277,12 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		FROM users WHERE id=$1`, user.ID)
 	updatedUser, err := scanUser(row)
 	if err != nil {
+		c.logRequestError(r, "verify code updated user query failed", err, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if err := tx.Commit(); err != nil {
+		c.logRequestError(r, "verify code transaction commit failed", err, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -309,22 +327,28 @@ func (c *Controller) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	err = c.db.QueryRow(`SELECT u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.user_id=$2 AND s.refresh_token=$3 AND s.is_revoked=FALSE AND s.refresh_token_expires_at > CURRENT_TIMESTAMP`,
 		claims.SessionID, claims.UserID, utils.HashToken(refresh)).Scan(&userEmail)
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			c.logRequestError(r, "refresh token session lookup failed", err, "user_id", claims.UserID, "session_id", claims.SessionID)
+		}
 		utils.JSONErr(w, http.StatusUnauthorized, "invalid or expired refresh token")
 		return
 	}
 	newAccess, accessExp, err := c.createToken(claims.UserID, userEmail, claims.SessionID, "access", c.cfg.JWTSecret, time.Duration(c.cfg.AccessTokenMinutes)*time.Minute)
 	if err != nil {
+		c.logRequestError(r, "refresh token access creation failed", err, "user_id", claims.UserID, "session_id", claims.SessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "token error")
 		return
 	}
 	newRefresh, refreshExp, err := c.createToken(claims.UserID, userEmail, claims.SessionID, "refresh", c.cfg.JWTRefreshSecret, time.Duration(c.cfg.RefreshTokenDays)*24*time.Hour)
 	if err != nil {
+		c.logRequestError(r, "refresh token refresh creation failed", err, "user_id", claims.UserID, "session_id", claims.SessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "token error")
 		return
 	}
 	_, err = c.db.Exec(`UPDATE sessions SET access_token=$1,refresh_token=$2,access_token_expires_at=$3,refresh_token_expires_at=$4,updated_at=CURRENT_TIMESTAMP WHERE id=$5`,
 		utils.HashToken(newAccess), utils.HashToken(newRefresh), accessExp, refreshExp, claims.SessionID)
 	if err != nil {
+		c.logRequestError(r, "refresh token session update failed", err, "user_id", claims.UserID, "session_id", claims.SessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -333,8 +357,12 @@ func (c *Controller) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	utils.JSONOK(w, map[string]interface{}{"success": true, "accessToken": newAccess, "newRefreshToken": newRefresh})
 }
 
-func (c *Controller) Logout(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
-	_, _ = c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE id=$1`, claims.SessionID)
+func (c *Controller) Logout(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+	if _, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE id=$1`, claims.SessionID); err != nil {
+		c.logRequestError(r, "logout session revoke failed", err, "user_id", claims.UserID, "session_id", claims.SessionID)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
 	http.SetCookie(w, &http.Cookie{Name: "witzo_access_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
 	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
 	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "Logged out"})
@@ -380,6 +408,7 @@ func (c *Controller) UpdateProfile(w http.ResponseWriter, r *http.Request, claim
 		claims.UserID, utils.Nullable(body.FullName), utils.Nullable(body.CompanyName), utils.Nullable(body.PhoneNumber),
 		utils.Nullable(body.Country), utils.Nullable(body.JobTitle), utils.Nullable(body.Industry), utils.Nullable(body.CompanyWebsite))
 	if err != nil {
+		c.logRequestError(r, "update profile failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -388,15 +417,17 @@ func (c *Controller) UpdateProfile(w http.ResponseWriter, r *http.Request, claim
 		profile_completed,profile_prompt_required_at,profile_completed_at FROM users WHERE id=$1`, claims.UserID)
 	u, err := scanUser(row)
 	if err != nil {
+		c.logRequestError(r, "update profile user reload failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	utils.JSONOK(w, map[string]interface{}{"success": true, "user": userResponse(u, claims.SessionID)})
 }
 
-func (c *Controller) GetSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Controller) GetSessions(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	rows, err := c.db.Query(`SELECT id,user_id,created_at,access_token_expires_at,refresh_token_expires_at,ip_address,user_agent,is_revoked FROM sessions WHERE user_id=$1 ORDER BY created_at DESC`, claims.UserID)
 	if err != nil {
+		c.logRequestError(r, "get sessions query failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -408,7 +439,10 @@ func (c *Controller) GetSessions(w http.ResponseWriter, _ *http.Request, claims 
 		var created, accessExp, refreshExp time.Time
 		var ip, ua sql.NullString
 		var revoked bool
-		_ = rows.Scan(&id, &uid, &created, &accessExp, &refreshExp, &ip, &ua, &revoked)
+		if err := rows.Scan(&id, &uid, &created, &accessExp, &refreshExp, &ip, &ua, &revoked); err != nil {
+			c.logRequestWarn(r, "get sessions row scan failed", err, "user_id", claims.UserID)
+			continue
+		}
 		items = append(items, map[string]interface{}{
 			"id": id, "userId": uid, "createdAt": created,
 			"accessTokenExpiresAt": accessExp, "refreshTokenExpiresAt": refreshExp,
@@ -422,24 +456,27 @@ func (c *Controller) RevokeSession(w http.ResponseWriter, r *http.Request, claim
 	sid := chi.URLParam(r, "id")
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE id=$1 AND user_id=$2`, sid, claims.UserID)
 	if err != nil {
+		c.logRequestError(r, "revoke session failed", err, "user_id", claims.UserID, "session_id", sid)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	utils.JSONOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) RevokeAllOtherSessions(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Controller) RevokeAllOtherSessions(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE user_id=$1 AND id <> $2`, claims.UserID, claims.SessionID)
 	if err != nil {
+		c.logRequestError(r, "revoke all other sessions failed", err, "user_id", claims.UserID, "session_id", claims.SessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	utils.JSONOK(w, map[string]interface{}{"success": true})
 }
 
-func (c *Controller) LogoutAll(w http.ResponseWriter, _ *http.Request, claims TokenClaims, _ UserRecord) {
+func (c *Controller) LogoutAll(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE user_id=$1`, claims.UserID)
 	if err != nil {
+		c.logRequestError(r, "logout all sessions failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}

@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	Environment string
+	ServiceName string
 
 	Port   string
 	DBURL  string
@@ -55,6 +56,11 @@ type Config struct {
 
 	WebhookProcessIntervalSec int
 	AnalyticsFlushIntervalSec int
+
+	LogLevel     string
+	LogFormat    string
+	LogAddSource bool
+	LogColor     bool
 
 	CORSAllowedOrigins []string
 }
@@ -119,7 +125,8 @@ func requireSecret(key string) string {
 	if v != "" {
 		return v
 	}
-	if strings.ToLower(getEnv("NODE_ENV", "development")) == "production" {
+	env := strings.ToLower(getEnv("GO_ENV", getEnv("NODE_ENV", "development")))
+	if env == "production" {
 		panic("missing required env: " + key)
 	}
 	return randomSecret()
@@ -144,9 +151,13 @@ func Load() Config {
 
 	redisHost := getEnv("REDIS_CACHE_HOST", getEnv("REDIS_HOST", "localhost"))
 	redisPort := getEnvInt("REDIS_CACHE_PORT", getEnvInt("REDIS_PORT", 6379))
+	environment := strings.ToLower(getEnv("GO_ENV", getEnv("NODE_ENV", "development")))
+	defaultLogFormat := "text"
+	defaultLogColor := true
 
 	return Config{
-		Environment: strings.ToLower(getEnv("NODE_ENV", "development")),
+		Environment: environment,
+		ServiceName: getEnv("SERVICE_NAME", "konvoq-backend"),
 
 		Port:   getEnv("PORT", "8080"),
 		DBURL:  dbURL,
@@ -188,6 +199,11 @@ func Load() Config {
 
 		WebhookProcessIntervalSec: getEnvInt("WEBHOOK_PROCESS_INTERVAL_SEC", 30),
 		AnalyticsFlushIntervalSec: getEnvInt("ANALYTICS_FLUSH_INTERVAL_SEC", 60),
+
+		LogLevel:     getEnv("LOG_LEVEL", "info"),
+		LogFormat:    getEnv("LOG_FORMAT", defaultLogFormat),
+		LogAddSource: getEnvBool("LOG_ADD_SOURCE", false),
+		LogColor:     getEnvBool("LOG_COLOR", defaultLogColor),
 
 		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{"*"}),
 	}

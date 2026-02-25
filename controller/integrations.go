@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"konvoq-backend/utils"
 )
@@ -74,7 +77,9 @@ func (c *Controller) sendEmail(to, subject, htmlBody, textBody string) {
 			"--" + boundary + "--"
 		addr := fmt.Sprintf("%s:%d", c.cfg.EmailHost, c.cfg.EmailPort)
 		auth := smtp.PlainAuth("", c.cfg.EmailUser, c.cfg.EmailPassword, c.cfg.EmailHost)
-		_ = smtp.SendMail(addr, auth, from, []string{to}, []byte(msg))
+		if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(msg)); err != nil {
+			c.logger.Error("email send failed", "to", to, "subject", subject, "error", err)
+		}
 	}()
 }
 
@@ -266,7 +271,11 @@ func (c *Controller) openAIChat(message string) (string, error) {
 		},
 	}
 	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		c.logger.Error("openai request build failed", "error", err)
+		return "", err
+	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.OpenAIAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -274,11 +283,15 @@ func (c *Controller) openAIChat(message string) (string, error) {
 	req = req.WithContext(ctx)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		c.logger.Warn("openai request failed", "error", err)
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		err := fmt.Errorf("openai status %d", resp.StatusCode)
+		c.logger.Warn("openai returned non-success status", "status_code", resp.StatusCode, "response", strings.TrimSpace(string(body)))
+		return "", err
 	}
 	var out struct {
 		Choices []struct {
@@ -288,6 +301,7 @@ func (c *Controller) openAIChat(message string) (string, error) {
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		c.logger.Warn("openai decode failed", "error", err)
 		return "", err
 	}
 	if len(out.Choices) == 0 {
@@ -335,7 +349,11 @@ func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
 	}
 	payload := map[string]interface{}{"model": "text-embedding-3-small", "input": input}
 	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/embeddings", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/embeddings", bytes.NewReader(b))
+	if err != nil {
+		c.logger.Error("openai embedding request build failed", "error", err)
+		return nil, err
+	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.OpenAIAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -343,11 +361,15 @@ func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
 	req = req.WithContext(ctx)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		c.logger.Warn("openai embedding request failed", "error", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("embedding status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		err := fmt.Errorf("embedding status %d", resp.StatusCode)
+		c.logger.Warn("openai embedding returned non-success status", "status_code", resp.StatusCode, "response", strings.TrimSpace(string(body)))
+		return nil, err
 	}
 	var out struct {
 		Data []struct {
@@ -355,6 +377,7 @@ func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		c.logger.Warn("openai embedding decode failed", "error", err)
 		return nil, err
 	}
 	if len(out.Data) == 0 {
@@ -382,6 +405,9 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	}
 	emb, err := c.openAIEmbedding(content)
 	if err != nil || len(emb) == 0 {
+		if err != nil {
+			c.logger.Warn("pinecone upsert embedding failed", "user_id", userID, "source_url", sourceURL, "error", err)
+		}
 		return err
 	}
 	id := utils.RandomID("pc")
@@ -397,7 +423,11 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 		}},
 	}
 	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, host+"/vectors/upsert", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, host+"/vectors/upsert", bytes.NewReader(b))
+	if err != nil {
+		c.logger.Error("pinecone upsert request build failed", "error", err)
+		return err
+	}
 	req.Header.Set("Api-Key", c.cfg.PineconeAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -405,12 +435,15 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	req = req.WithContext(ctx)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		c.logger.Warn("pinecone upsert request failed", "user_id", userID, "source_url", sourceURL, "error", err)
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("pinecone upsert status %d: %s", resp.StatusCode, string(body))
+		err := fmt.Errorf("pinecone upsert status %d: %s", resp.StatusCode, string(body))
+		c.logger.Warn("pinecone upsert returned non-success status", "status_code", resp.StatusCode, "user_id", userID, "source_url", sourceURL)
+		return err
 	}
 	return nil
 }
@@ -425,6 +458,9 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 	}
 	emb, err := c.openAIEmbedding(query)
 	if err != nil || len(emb) == 0 {
+		if err != nil {
+			c.logger.Warn("pinecone query embedding failed", "user_id", userID, "error", err)
+		}
 		return nil, err
 	}
 	if topK <= 0 {
@@ -439,7 +475,11 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 		},
 	}
 	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, host+"/query", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, host+"/query", bytes.NewReader(b))
+	if err != nil {
+		c.logger.Error("pinecone query request build failed", "error", err)
+		return nil, err
+	}
 	req.Header.Set("Api-Key", c.cfg.PineconeAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -447,16 +487,20 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 	req = req.WithContext(ctx)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		c.logger.Warn("pinecone query request failed", "user_id", userID, "error", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("pinecone query status %d", resp.StatusCode)
+		err := fmt.Errorf("pinecone query status %d", resp.StatusCode)
+		c.logger.Warn("pinecone query returned non-success status", "status_code", resp.StatusCode, "user_id", userID)
+		return nil, err
 	}
 	var out struct {
 		Matches []map[string]interface{} `json:"matches"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		c.logger.Warn("pinecone query decode failed", "user_id", userID, "error", err)
 		return nil, err
 	}
 	return out.Matches, nil
@@ -475,10 +519,12 @@ func (c *Controller) extractTextFromURL(source string) (string, error) {
 	req.Header.Set("User-Agent", "WitzoGoBot/1.0")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		c.logger.Warn("source scrape request failed", "url", source, "error", err)
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		c.logger.Warn("source scrape returned non-success status", "url", source, "status_code", resp.StatusCode)
 		return "", fmt.Errorf("scrape status %d", resp.StatusCode)
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -495,9 +541,11 @@ func (c *Controller) extractTextFromURL(source string) (string, error) {
 
 func (c *Controller) queueWebhookEvent(userID, leadID, eventType string, payload map[string]interface{}) {
 	b, _ := json.Marshal(payload)
-	_, _ = c.db.Exec(`INSERT INTO lead_webhook_events (user_id,lead_id,config_id,event_type,payload,status,max_attempts)
+	if _, err := c.db.Exec(`INSERT INTO lead_webhook_events (user_id,lead_id,config_id,event_type,payload,status,max_attempts)
 		SELECT $1,$2,c.id,$3,$4::jsonb,'pending',8 FROM lead_webhook_configs c WHERE c.user_id=$1 AND c.is_active=TRUE`,
-		userID, utils.Nullable(leadID), eventType, string(b))
+		userID, utils.Nullable(leadID), eventType, string(b)); err != nil {
+		c.logger.Warn("queue webhook event insert failed", "user_id", userID, "lead_id", leadID, "event_type", eventType, "error", err)
+	}
 }
 
 func webhookSignature(secret, timestamp, body string) string {
@@ -512,20 +560,30 @@ func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
 		WHERE e.status IN ('pending','retrying') AND e.next_attempt_at <= CURRENT_TIMESTAMP AND c.is_active=TRUE
 		ORDER BY e.created_at ASC LIMIT 50`)
 	if err != nil {
+		c.logger.Error("failed to fetch pending webhook events", "error", err)
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, userID, configID, eventType, payloadText, webhookURL, secret string
 		var attempts, maxAttempts int
-		_ = rows.Scan(&id, &userID, &configID, &eventType, &payloadText, &attempts, &maxAttempts, &webhookURL, &secret)
+		if err := rows.Scan(&id, &userID, &configID, &eventType, &payloadText, &attempts, &maxAttempts, &webhookURL, &secret); err != nil {
+			c.logger.Error("failed to scan webhook event row", "error", err)
+			continue
+		}
 		nextAttempts := attempts + 1
-		_, _ = c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status='processing',attempts=attempts+1,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id)
+		if _, err := c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status='processing',attempts=attempts+1,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id); err != nil {
+			c.logger.Warn("failed to mark webhook event as processing", "event_id", id, "error", err)
+		}
 		timestamp := fmt.Sprintf("%d", time.Now().Unix())
 		eventBody := fmt.Sprintf(`{"id":"%s","type":"%s","occurredAt":"%s","payload":%s}`,
 			id, eventType, time.Now().UTC().Format(time.RFC3339), payloadText)
 		sig := webhookSignature(secret, timestamp, eventBody)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, strings.NewReader(eventBody))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, strings.NewReader(eventBody))
+		if err != nil {
+			c.logger.Warn("failed to build webhook request", "event_id", id, "webhook_url", webhookURL, "error", err)
+			continue
+		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Witzo-Event-Id", id)
 		req.Header.Set("X-Witzo-Event-Type", eventType)
@@ -536,7 +594,9 @@ func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
 			_ = resp.Body.Close()
 		}
 		if err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			_, _ = c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status='delivered',delivered_at=CURRENT_TIMESTAMP,response_status=$2,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id, resp.StatusCode)
+			if _, err := c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status='delivered',delivered_at=CURRENT_TIMESTAMP,response_status=$2,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id, resp.StatusCode); err != nil {
+				c.logger.Warn("failed to mark webhook event delivered", "event_id", id, "error", err)
+			}
 			continue
 		}
 		status := "retrying"
@@ -553,8 +613,20 @@ func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
 			errorMsg = fmt.Sprintf("webhook status %d", resp.StatusCode)
 		}
 		delayMs := int(math.Min(600000, float64(5000*int(math.Pow(2, float64(nextAttempts-1))))))
-		_, _ = c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status=$2,last_error=$3,response_status=$4,next_attempt_at=CASE WHEN $2='dead' THEN next_attempt_at ELSE CURRENT_TIMESTAMP + ($5 || ' milliseconds')::interval END,updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-			id, status, errorMsg, responseStatus, delayMs)
+		if _, err := c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status=$2,last_error=$3,response_status=$4,next_attempt_at=CASE WHEN $2='dead' THEN next_attempt_at ELSE CURRENT_TIMESTAMP + ($5 || ' milliseconds')::interval END,updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, status, errorMsg, responseStatus, delayMs); err != nil {
+			c.logger.Warn("failed to update webhook event retry state", "event_id", id, "error", err)
+		}
+		c.logger.Warn("webhook delivery attempt failed",
+			"event_id", id,
+			"user_id", userID,
+			"config_id", configID,
+			"status", status,
+			"attempt", nextAttempts,
+			"max_attempts", maxAttempts,
+			"error", errorMsg,
+			"response_status", responseStatus,
+		)
 	}
 }
 
@@ -567,6 +639,9 @@ func (c *Controller) flushWidgetAnalytics(ctx context.Context) {
 	for i := 0; i < 200; i++ {
 		v, err := c.redis.RPop(ctx, "widget:analytics:buffer").Result()
 		if err != nil {
+			if !errors.Is(err, redis.Nil) {
+				c.logger.Warn("failed to pop analytics event from redis", "error", err)
+			}
 			break
 		}
 		var evt struct {
@@ -577,13 +652,18 @@ func (c *Controller) flushWidgetAnalytics(ctx context.Context) {
 			UA          string                 `json:"user_agent"`
 			Referer     string                 `json:"referer_url"`
 		}
-		if json.Unmarshal([]byte(v), &evt) != nil || evt.WidgetKeyID == 0 {
+		if err := json.Unmarshal([]byte(v), &evt); err != nil || evt.WidgetKeyID == 0 {
+			if err != nil {
+				c.logger.Warn("failed to decode buffered analytics event", "error", err)
+			}
 			continue
 		}
 		data, _ := json.Marshal(evt.EventData)
-		_, _ = c.db.ExecContext(ctx, `INSERT INTO widget_analytics (widget_key_id,event_type,event_data,ip_address,user_agent,referer_url) VALUES ($1,$2,$3::jsonb,$4,$5,$6)`,
+		if _, err := c.db.ExecContext(ctx, `INSERT INTO widget_analytics (widget_key_id,event_type,event_data,ip_address,user_agent,referer_url) VALUES ($1,$2,$3::jsonb,$4,$5,$6)`,
 			evt.WidgetKeyID, evt.EventType, string(data),
-			utils.Nullable(evt.IP), utils.Nullable(evt.UA), utils.Nullable(evt.Referer))
+			utils.Nullable(evt.IP), utils.Nullable(evt.UA), utils.Nullable(evt.Referer)); err != nil {
+			c.logger.Warn("failed to persist analytics event", "widget_key_id", evt.WidgetKeyID, "event_type", evt.EventType, "error", err)
+		}
 	}
 }
 
@@ -599,11 +679,17 @@ func (c *Controller) StartBackgroundWorkers(ctx context.Context) {
 	analyticsTicker := time.NewTicker(time.Duration(c.cfg.AnalyticsFlushIntervalSec) * time.Second)
 	webhookTicker := time.NewTicker(time.Duration(c.cfg.WebhookProcessIntervalSec) * time.Second)
 	maintenanceTicker := time.NewTicker(24 * time.Hour)
+	c.logger.Info("background workers started",
+		"analytics_interval_sec", c.cfg.AnalyticsFlushIntervalSec,
+		"webhook_interval_sec", c.cfg.WebhookProcessIntervalSec,
+		"maintenance_interval_hours", 24,
+	)
 
 	go func() {
 		defer analyticsTicker.Stop()
 		defer webhookTicker.Stop()
 		defer maintenanceTicker.Stop()
+		defer c.logger.Info("background workers stopped")
 		for {
 			select {
 			case <-ctx.Done():
@@ -613,10 +699,18 @@ func (c *Controller) StartBackgroundWorkers(ctx context.Context) {
 			case <-webhookTicker.C:
 				c.processPendingWebhookEvents(context.Background())
 			case <-maintenanceTicker.C:
-				_, _ = c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE (refresh_token_expires_at < CURRENT_TIMESTAMP OR refresh_token_expires_at IS NULL) AND is_revoked=FALSE`)
-				_, _ = c.db.Exec(`DELETE FROM verification_codes WHERE expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'`)
-				_, _ = c.db.Exec(`DELETE FROM widget_analytics WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'`)
-				_, _ = c.db.Exec(`DELETE FROM sessions WHERE is_revoked=TRUE AND updated_at < CURRENT_TIMESTAMP - INTERVAL '30 days'`)
+				if _, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE (refresh_token_expires_at < CURRENT_TIMESTAMP OR refresh_token_expires_at IS NULL) AND is_revoked=FALSE`); err != nil {
+					c.logger.Warn("maintenance task failed: revoke expired sessions", "error", err)
+				}
+				if _, err := c.db.Exec(`DELETE FROM verification_codes WHERE expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'`); err != nil {
+					c.logger.Warn("maintenance task failed: cleanup verification codes", "error", err)
+				}
+				if _, err := c.db.Exec(`DELETE FROM widget_analytics WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'`); err != nil {
+					c.logger.Warn("maintenance task failed: cleanup widget analytics", "error", err)
+				}
+				if _, err := c.db.Exec(`DELETE FROM sessions WHERE is_revoked=TRUE AND updated_at < CURRENT_TIMESTAMP - INTERVAL '30 days'`); err != nil {
+					c.logger.Warn("maintenance task failed: cleanup revoked sessions", "error", err)
+				}
 			}
 		}
 	}()

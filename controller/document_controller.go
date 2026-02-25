@@ -21,6 +21,7 @@ func (c *Controller) UploadDocument(w http.ResponseWriter, r *http.Request, clai
 	err = c.db.QueryRow(`INSERT INTO documents (user_id,file_name,file_size,mime_type) VALUES ($1,$2,$3,$4) RETURNING id`,
 		claims.UserID, name, size, utils.Nullable(mime)).Scan(&id)
 	if err != nil {
+		c.logRequestError(r, "upload document insert failed", err, "user_id", claims.UserID, "file_name", name)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -30,7 +31,9 @@ func (c *Controller) UploadDocument(w http.ResponseWriter, r *http.Request, clai
 				docID, docName, docMime := id, name, mime
 				go func() {
 					if text := extractDocumentText(docName, docMime, data); text != "" {
-						_ = c.pineconeUpsert(claims.UserID, "doc:"+docID, text)
+						if err := c.pineconeUpsert(claims.UserID, "doc:"+docID, text); err != nil {
+							c.logger.Warn("document index upsert failed", "user_id", claims.UserID, "document_id", docID, "error", err)
+						}
 					}
 				}()
 			}
@@ -50,8 +53,10 @@ func (c *Controller) UploadMultipleDocuments(w http.ResponseWriter, r *http.Requ
 	for _, fh := range files {
 		name, size, mime := docFromHeader(fh)
 		var id string
-		_ = c.db.QueryRow(`INSERT INTO documents (user_id,file_name,file_size,mime_type) VALUES ($1,$2,$3,$4) RETURNING id`,
-			claims.UserID, name, size, utils.Nullable(mime)).Scan(&id)
+		if err := c.db.QueryRow(`INSERT INTO documents (user_id,file_name,file_size,mime_type) VALUES ($1,$2,$3,$4) RETURNING id`,
+			claims.UserID, name, size, utils.Nullable(mime)).Scan(&id); err != nil {
+			c.logRequestWarn(r, "batch upload document insert failed", err, "user_id", claims.UserID, "file_name", name)
+		}
 		items = append(items, map[string]interface{}{"id": id, "fileName": name, "size": size, "mimeType": mime})
 		if id != "" {
 			if f, openErr := fh.Open(); openErr == nil {
@@ -59,7 +64,9 @@ func (c *Controller) UploadMultipleDocuments(w http.ResponseWriter, r *http.Requ
 					docID, docName, docMime := id, name, mime
 					go func() {
 						if text := extractDocumentText(docName, docMime, data); text != "" {
-							_ = c.pineconeUpsert(claims.UserID, "doc:"+docID, text)
+							if err := c.pineconeUpsert(claims.UserID, "doc:"+docID, text); err != nil {
+								c.logger.Warn("document batch index upsert failed", "user_id", claims.UserID, "document_id", docID, "error", err)
+							}
 						}
 					}()
 				}

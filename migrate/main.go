@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	neturl "net/url"
 	"os"
@@ -14,19 +14,25 @@ import (
 	"konvoq-backend/envx"
 	"konvoq-backend/migrations"
 	"konvoq-backend/platform/db"
+	applog "konvoq-backend/platform/logger"
 )
 
 func main() {
 	if err := envx.LoadDotEnvOverrideIfPresent(".env"); err != nil {
-		log.Fatalf("failed to load .env: %v", err)
+		slog.Error("failed to load .env", "error", err)
+		os.Exit(1)
 	}
 
+	logger := loggerFromEnv()
+	slog.SetDefault(logger)
+
 	dbURL := databaseURLFromEnv()
-	log.Printf("connecting database: %s", redactDatabaseURL(dbURL))
+	logger.Info("connecting database", "database_url", redactDatabaseURL(dbURL))
 
 	database, err := db.Open(dbURL)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("database connection failed", "error", err)
+		os.Exit(1)
 	}
 	defer database.Close()
 
@@ -34,10 +40,11 @@ func main() {
 	defer cancel()
 
 	if err := migrations.Run(ctx, database, filepath.Join("migrations", "sql")); err != nil {
-		log.Fatal(err)
+		logger.Error("database migrations failed", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("database migrations completed")
+	logger.Info("database migrations completed")
 }
 
 func databaseURLFromEnv() string {
@@ -76,6 +83,28 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.ToLower(getenv(key, ""))
+	if v == "" {
+		return fallback
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func loggerFromEnv() *slog.Logger {
+	env := strings.ToLower(getenv("GO_ENV", getenv("NODE_ENV", "development")))
+	format := getenv("LOG_FORMAT", "text")
+	defaultLogColor := true
+	return applog.New(applog.Config{
+		Service:     getenv("SERVICE_NAME", "konvoq-migrate"),
+		Environment: env,
+		Level:       getenv("LOG_LEVEL", "info"),
+		Format:      format,
+		AddSource:   getenvBool("LOG_ADD_SOURCE", false),
+		Color:       getenvBool("LOG_COLOR", defaultLogColor),
+	})
 }
 
 func buildDatabaseURL(host string, port int, dbName, user, pass string) string {
