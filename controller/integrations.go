@@ -1,4 +1,4 @@
-package handler
+package controller
 
 import (
 	"bytes"
@@ -15,9 +15,13 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"konvoq-backend/utils"
 )
 
-func (c *Handler) sendVerificationEmail(email, code string) {
+// ── Email ──────────────────────────────────────────────────────────────────────
+
+func (c *Controller) sendVerificationEmail(email, code string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
@@ -27,7 +31,7 @@ func (c *Handler) sendVerificationEmail(email, code string) {
 	c.sendEmail(email, subject, html, text)
 }
 
-func (c *Handler) sendWelcomeEmail(email string) {
+func (c *Controller) sendWelcomeEmail(email string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
@@ -37,7 +41,7 @@ func (c *Handler) sendWelcomeEmail(email string) {
 	c.sendEmail(email, subject, html, text)
 }
 
-func (c *Handler) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerName string) {
+func (c *Controller) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerName string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
@@ -51,13 +55,13 @@ func (c *Handler) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerName s
 	c.sendEmail(visitorEmail, subject, html, text)
 }
 
-func (c *Handler) sendEmail(to, subject, htmlBody, textBody string) {
+func (c *Controller) sendEmail(to, subject, htmlBody, textBody string) {
 	go func() {
 		from := c.cfg.EmailFrom
 		if from == "" {
 			from = c.cfg.EmailUser
 		}
-		boundary := randomID("boundary")
+		boundary := utils.RandomID("boundary")
 		msg := "From: " + from + "\r\n" +
 			"To: " + to + "\r\n" +
 			"Subject: " + subject + "\r\n" +
@@ -73,8 +77,6 @@ func (c *Handler) sendEmail(to, subject, htmlBody, textBody string) {
 		_ = smtp.SendMail(addr, auth, from, []string{to}, []byte(msg))
 	}()
 }
-
-// -- Email HTML builders --------------------------------------------------------
 
 func buildVerificationEmailHTML(code string, expiryMinutes int) string {
 	return `<!DOCTYPE html>
@@ -193,7 +195,7 @@ func buildFollowUpEmailHTML(visitorName, from string) string {
               Thank you for reaching out and chatting with us today. We hope we were able to help answer your questions.
             </p>
             <p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#4d657e;">
-              If you have any further questions or need additional assistance, please don't hesitate to get in touch — we're always happy to help.
+              If you have any further questions or need additional assistance, please don't hesitate to get in touch.
             </p>
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0;background:#f8fbff;border:1px solid #d7e8f8;border-radius:14px;">
               <tr><td style="padding:16px 18px;">
@@ -229,8 +231,6 @@ func buildFollowUpEmailText(visitorName, from string) string {
 		"— " + from + "\n\nPowered by Witzo AI"
 }
 
-// displayNameFromEmail converts an email local-part into a presentable display name.
-// e.g. "john.doe@example.com" ? "John Doe"
 func displayNameFromEmail(email string) string {
 	parts := strings.SplitN(email, "@", 2)
 	local := parts[0]
@@ -252,7 +252,9 @@ func displayNameFromEmail(email string) string {
 	return result
 }
 
-func (c *Handler) openAIChat(message string) (string, error) {
+// ── OpenAI ─────────────────────────────────────────────────────────────────────
+
+func (c *Controller) openAIChat(message string) (string, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return "", nil
 	}
@@ -294,7 +296,7 @@ func (c *Handler) openAIChat(message string) (string, error) {
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
 }
 
-func (c *Handler) openAIAnswerWithContext(query string, matches []map[string]interface{}) (string, error) {
+func (c *Controller) openAIAnswerWithContext(query string, matches []map[string]interface{}) (string, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return "", nil
 	}
@@ -305,7 +307,7 @@ func (c *Handler) openAIAnswerWithContext(query string, matches []map[string]int
 			continue
 		}
 		text, _ := meta["text"].(string)
-		url, _ := meta["url"].(string)
+		sourceURL, _ := meta["url"].(string)
 		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
@@ -313,8 +315,8 @@ func (c *Handler) openAIAnswerWithContext(query string, matches []map[string]int
 		if len(text) > 1000 {
 			text = text[:1000]
 		}
-		if strings.TrimSpace(url) != "" {
-			contextParts = append(contextParts, fmt.Sprintf("Source: %s\n%s", url, text))
+		if strings.TrimSpace(sourceURL) != "" {
+			contextParts = append(contextParts, fmt.Sprintf("Source: %s\n%s", sourceURL, text))
 		} else {
 			contextParts = append(contextParts, text)
 		}
@@ -327,7 +329,7 @@ func (c *Handler) openAIAnswerWithContext(query string, matches []map[string]int
 	return c.openAIChat(prompt)
 }
 
-func (c *Handler) openAIEmbedding(input string) ([]float64, error) {
+func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return nil, nil
 	}
@@ -361,14 +363,16 @@ func (c *Handler) openAIEmbedding(input string) ([]float64, error) {
 	return out.Data[0].Embedding, nil
 }
 
-func (c *Handler) pineconeHost() string {
+// ── Pinecone ───────────────────────────────────────────────────────────────────
+
+func (c *Controller) pineconeHost() string {
 	if strings.TrimSpace(c.cfg.PineconeIndexName) == "" || strings.TrimSpace(c.cfg.PineconeEnvironment) == "" {
 		return ""
 	}
 	return fmt.Sprintf("https://%s-%s.svc.pinecone.io", c.cfg.PineconeIndexName, c.cfg.PineconeEnvironment)
 }
 
-func (c *Handler) pineconeUpsert(userID, sourceURL, content string) error {
+func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil
 	}
@@ -380,7 +384,7 @@ func (c *Handler) pineconeUpsert(userID, sourceURL, content string) error {
 	if err != nil || len(emb) == 0 {
 		return err
 	}
-	id := randomID("pc")
+	id := utils.RandomID("pc")
 	payload := map[string]interface{}{
 		"vectors": []map[string]interface{}{{
 			"id":     id,
@@ -411,7 +415,7 @@ func (c *Handler) pineconeUpsert(userID, sourceURL, content string) error {
 	return nil
 }
 
-func (c *Handler) pineconeQuery(userID, query string, topK int) ([]map[string]interface{}, error) {
+func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string]interface{}, error) {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil, nil
 	}
@@ -458,7 +462,9 @@ func (c *Handler) pineconeQuery(userID, query string, topK int) ([]map[string]in
 	return out.Matches, nil
 }
 
-func (c *Handler) extractTextFromURL(source string) (string, error) {
+// ── URL scraper ────────────────────────────────────────────────────────────────
+
+func (c *Controller) extractTextFromURL(source string) (string, error) {
 	u, err := url.Parse(source)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", fmt.Errorf("invalid url")
@@ -485,10 +491,13 @@ func (c *Handler) extractTextFromURL(source string) (string, error) {
 	return text, nil
 }
 
-func (c *Handler) queueWebhookEvent(userID, leadID, eventType string, payload map[string]interface{}) {
+// ── Webhooks ───────────────────────────────────────────────────────────────────
+
+func (c *Controller) queueWebhookEvent(userID, leadID, eventType string, payload map[string]interface{}) {
 	b, _ := json.Marshal(payload)
 	_, _ = c.db.Exec(`INSERT INTO lead_webhook_events (user_id,lead_id,config_id,event_type,payload,status,max_attempts)
-		SELECT $1,$2,c.id,$3,$4::jsonb,'pending',8 FROM lead_webhook_configs c WHERE c.user_id=$1 AND c.is_active=TRUE`, userID, nullable(leadID), eventType, string(b))
+		SELECT $1,$2,c.id,$3,$4::jsonb,'pending',8 FROM lead_webhook_configs c WHERE c.user_id=$1 AND c.is_active=TRUE`,
+		userID, utils.Nullable(leadID), eventType, string(b))
 }
 
 func webhookSignature(secret, timestamp, body string) string {
@@ -497,7 +506,7 @@ func webhookSignature(secret, timestamp, body string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (c *Handler) processPendingWebhookEvents(ctx context.Context) {
+func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
 	rows, err := c.db.QueryContext(ctx, `SELECT e.id,e.user_id,e.config_id,e.event_type,e.payload::text,e.attempts,e.max_attempts,c.webhook_url,c.signing_secret
 		FROM lead_webhook_events e JOIN lead_webhook_configs c ON c.id=e.config_id
 		WHERE e.status IN ('pending','retrying') AND e.next_attempt_at <= CURRENT_TIMESTAMP AND c.is_active=TRUE
@@ -544,11 +553,14 @@ func (c *Handler) processPendingWebhookEvents(ctx context.Context) {
 			errorMsg = fmt.Sprintf("webhook status %d", resp.StatusCode)
 		}
 		delayMs := int(math.Min(600000, float64(5000*int(math.Pow(2, float64(nextAttempts-1))))))
-		_, _ = c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status=$2,last_error=$3,response_status=$4,next_attempt_at=CASE WHEN $2='dead' THEN next_attempt_at ELSE CURRENT_TIMESTAMP + ($5 || ' milliseconds')::interval END,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id, status, errorMsg, responseStatus, delayMs)
+		_, _ = c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status=$2,last_error=$3,response_status=$4,next_attempt_at=CASE WHEN $2='dead' THEN next_attempt_at ELSE CURRENT_TIMESTAMP + ($5 || ' milliseconds')::interval END,updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+			id, status, errorMsg, responseStatus, delayMs)
 	}
 }
 
-func (c *Handler) flushWidgetAnalytics(ctx context.Context) {
+// ── Analytics flush ────────────────────────────────────────────────────────────
+
+func (c *Controller) flushWidgetAnalytics(ctx context.Context) {
 	if c.redis == nil {
 		return
 	}
@@ -569,11 +581,15 @@ func (c *Handler) flushWidgetAnalytics(ctx context.Context) {
 			continue
 		}
 		data, _ := json.Marshal(evt.EventData)
-		_, _ = c.db.ExecContext(ctx, `INSERT INTO widget_analytics (widget_key_id,event_type,event_data,ip_address,user_agent,referer_url) VALUES ($1,$2,$3::jsonb,$4,$5,$6)`, evt.WidgetKeyID, evt.EventType, string(data), nullable(evt.IP), nullable(evt.UA), nullable(evt.Referer))
+		_, _ = c.db.ExecContext(ctx, `INSERT INTO widget_analytics (widget_key_id,event_type,event_data,ip_address,user_agent,referer_url) VALUES ($1,$2,$3::jsonb,$4,$5,$6)`,
+			evt.WidgetKeyID, evt.EventType, string(data),
+			utils.Nullable(evt.IP), utils.Nullable(evt.UA), utils.Nullable(evt.Referer))
 	}
 }
 
-func (c *Handler) StartBackgroundWorkers(ctx context.Context) {
+// ── Background workers ─────────────────────────────────────────────────────────
+
+func (c *Controller) StartBackgroundWorkers(ctx context.Context) {
 	if c.cfg.AnalyticsFlushIntervalSec <= 0 {
 		c.cfg.AnalyticsFlushIntervalSec = 60
 	}

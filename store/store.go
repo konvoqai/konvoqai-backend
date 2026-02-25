@@ -1,4 +1,4 @@
-package app
+package store
 
 import (
 	"database/sql"
@@ -12,7 +12,7 @@ type Store struct {
 	Redis *redis.Client
 }
 
-func NewStore(db *sql.DB, redisClient *redis.Client) *Store {
+func New(db *sql.DB, redisClient *redis.Client) *Store {
 	return &Store{
 		DB:    db,
 		Redis: redisClient,

@@ -19,7 +19,6 @@ func (h *Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]interface{}{"success": true, "state": r.URL.Query().Get("state"), "code": r.URL.Query().Get("code")})
 }
 
-// local minimal JSON helpers to keep handler self-contained.
 func jsonOK(w http.ResponseWriter, payload map[string]interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
