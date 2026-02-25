@@ -1,0 +1,58 @@
+<div id="textChatWidget" class="chat-widget hidden">
+	<div id="chat-header" class="chat-header">
+		<div class="chat-header-left">
+			<div id="chatIcon" class="chat-icon"></div>
+			<div class="online-ready">
+				<div class="online-ready-text">
+					<h3 id="bannerText" class="chat-title">Text Chat</h3>
+					<p id="bannerSubText" class="chat-subtitle hidden"></p>
+				</div>
+			</div>
+		</div>
+		<div class="chat-header-right">
+			<button id="closeTextChat" class="chat-action-btn" aria-label="Close chat">
+				<span class="close-icon">&times;</span>
+			</button>
+		</div>
+	</div>
+
+	<div id="textMessagesArea" class="chat-messages"></div>
+
+	<div id="contactFormSlot" class="contact-form hidden">
+		<h3>Get in touch</h3>
+		<p>Our team will respond as soon as possible.</p>
+		<input id="cf-name" type="text" placeholder="Your name" />
+		<input id="cf-email" type="email" placeholder="Your email *" />
+		<textarea id="cf-message" placeholder="Your message"></textarea>
+		<button class="contact-form-submit" id="cf-submit">Send Message</button>
+	</div>
+
+	<div id="conversationRatingSlot" class="hidden"></div>
+
+	<div id="chatInput" class="chat-input">
+		<div class="chat-language-row">
+			<label for="languageSelector" class="chat-language-label">Language</label>
+			<select id="languageSelector" class="chat-language-select"></select>
+		</div>
+		<div class="chat-input-container">
+			<input id="textMessageInput" type="text" placeholder="Type your message..." class="chat-text-input" />
+			<button class="chat-send-btn" id="textSendButton" aria-label="Send">
+				<span class="send-icon">&#10148;</span>
+			</button>
+		</div>
+		<p id="chatInputError" class="chat-input-error hidden"></p>
+	</div>
+
+	<div class="chat-footer">
+		<h3 class="powered-by">
+			powered by
+			<a href="https://konvoq.ai/" target="_blank" rel="noopener noreferrer" class="powered-by-brand">konvoq</a>
+		</h3>
+	</div>
+</div>
+
+<div id="floatingBtn" class="floating">
+	<button class="floating-btn hidden" id="floating-btn" aria-label="Open chat">
+		<span class="floating-label">Chat</span>
+	</button>
+</div>
