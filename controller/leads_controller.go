@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"konvoq-backend/utils"
 )
 
@@ -31,7 +33,7 @@ func (c *Controller) ListLeads(w http.ResponseWriter, _ *http.Request, claims To
 }
 
 func (c *Controller) GetLead(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	id := r.PathValue("id")
+	id := chi.URLParam(r, "id")
 	var name, email, phone, status sql.NullString
 	var created time.Time
 	err := c.db.QueryRow(`SELECT name,email,phone,status,created_at FROM leads WHERE id=$1 AND user_id=$2`, id, claims.UserID).Scan(&name, &email, &phone, &status, &created)
@@ -46,7 +48,7 @@ func (c *Controller) GetLead(w http.ResponseWriter, r *http.Request, claims Toke
 }
 
 func (c *Controller) UpdateLeadStatus(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	id := r.PathValue("id")
+	id := chi.URLParam(r, "id")
 	var body struct {
 		Status string `json:"status"`
 	}
@@ -63,7 +65,7 @@ func (c *Controller) UpdateLeadStatus(w http.ResponseWriter, r *http.Request, cl
 }
 
 func (c *Controller) DeleteLead(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	id := r.PathValue("id")
+	id := chi.URLParam(r, "id")
 	_, _ = c.db.Exec(`DELETE FROM leads WHERE id=$1 AND user_id=$2`, id, claims.UserID)
 	utils.JSONOK(w, map[string]interface{}{"success": true})
 }
@@ -170,7 +172,7 @@ func (c *Controller) RetryWebhookEvent(w http.ResponseWriter, r *http.Request, c
 		utils.JSONErr(w, http.StatusForbidden, "This feature is available only for enterprise plan")
 		return
 	}
-	eid := r.PathValue("eventId")
+	eid := chi.URLParam(r, "id")
 	_, _ = c.db.Exec(`UPDATE lead_webhook_events SET status='pending',attempts=0,next_attempt_at=CURRENT_TIMESTAMP,last_error=NULL,response_status=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND user_id=$2`,
 		eid, claims.UserID)
 	utils.JSONOK(w, map[string]interface{}{"success": true})

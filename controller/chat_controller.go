@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"konvoq-backend/utils"
 )
 
@@ -82,7 +84,7 @@ func (c *Controller) ChatSessions(w http.ResponseWriter, _ *http.Request, claims
 }
 
 func (c *Controller) ChatSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	sid := r.PathValue("sessionId")
+	sid := chi.URLParam(r, "id")
 	var exists bool
 	_ = c.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM chat_conversations WHERE id=$1 AND user_id=$2 AND is_deleted=FALSE)`, sid, claims.UserID).Scan(&exists)
 	if !exists {
@@ -106,7 +108,7 @@ func (c *Controller) ChatSession(w http.ResponseWriter, r *http.Request, claims 
 }
 
 func (c *Controller) ClearChatSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	sid := r.PathValue("sessionId")
+	sid := chi.URLParam(r, "id")
 	_, _ = c.db.Exec(`UPDATE chat_conversations SET is_deleted=TRUE,status='closed',updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND user_id=$2`, sid, claims.UserID)
 	utils.JSONOK(w, map[string]interface{}{"success": true})
 }

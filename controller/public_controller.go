@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"konvoq-backend/utils"
 )
 
 func (c *Controller) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("widgetKey")
+	key := chi.URLParam(r, "widgetKey")
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	cached, err := c.redis.Get(ctx, "widget:"+key).Result()

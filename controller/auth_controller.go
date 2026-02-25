@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"konvoq-backend/utils"
-
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+
+	"konvoq-backend/utils"
 )
 
 func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord, error) {
@@ -418,7 +419,7 @@ func (c *Controller) GetSessions(w http.ResponseWriter, _ *http.Request, claims 
 }
 
 func (c *Controller) RevokeSession(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	sid := r.PathValue("sessionId")
+	sid := chi.URLParam(r, "id")
 	_, err := c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE id=$1 AND user_id=$2`, sid, claims.UserID)
 	if err != nil {
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")

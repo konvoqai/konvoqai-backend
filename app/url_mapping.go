@@ -1,99 +1,127 @@
 package app
 
-import "net/http"
+import "github.com/go-chi/chi/v5"
 
-// registerRoutes attaches all HTTP routes to the mux.
-func (a *App) registerRoutes(mux *http.ServeMux) {
+func (a *App) registerRoutes(r chi.Router) {
 	// Health / readiness
-	mux.HandleFunc("GET /health", a.ctrl.Health)
-	mux.HandleFunc("GET /health/detailed", a.ctrl.HealthDetailed)
-	mux.HandleFunc("GET /ready", a.ctrl.Ready)
-	mux.HandleFunc("GET /live", a.ctrl.Live)
-	mux.HandleFunc("GET /metrics", a.ctrl.Metrics)
+	r.Get("/health", a.ctrl.Health)
+	r.Get("/health/detailed", a.ctrl.HealthDetailed)
+	r.Get("/ready", a.ctrl.Ready)
+	r.Get("/live", a.ctrl.Live)
+	r.Get("/metrics", a.ctrl.Metrics)
 
-	// Auth (public)
-	mux.HandleFunc("GET /api/auth/csrf-token", a.ctrl.GetCSRFToken)
-	mux.HandleFunc("POST /api/auth/request-code", a.ctrl.RequestCode)
-	mux.HandleFunc("POST /api/auth/verify", a.ctrl.VerifyCode)
-	mux.HandleFunc("POST /api/auth/refresh", a.ctrl.RefreshToken)
-	mux.HandleFunc("GET /api/auth/google", a.ctrl.GoogleLogin)
-	mux.HandleFunc("GET /api/auth/google/callback", a.ctrl.GoogleCallback)
-	mux.HandleFunc("POST /api/auth/google/verify", a.ctrl.VerifyGoogle)
+	r.Route("/api/auth", a.mapAuthRoutes)
+	r.Route("/api/me", a.mapMeRoutes)
+	r.Route("/api/scraper", a.mapScraperRoutes)
+	r.Route("/api/chat", a.mapChatRoutes)
+	r.Route("/api/documents", a.mapDocumentRoutes)
+	r.Route("/api/widget", a.mapWidgetRoutes)
+	r.Route("/api/leads", a.mapLeadsRoutes)
+	r.Route("/api/feedback", a.mapFeedbackRoutes)
+	r.Route("/api/admin", a.mapAdminRoutes)
+	r.Route("/api/v1", a.mapPublicV1Routes)
+}
 
-	// Auth (protected)
-	mux.HandleFunc("POST /api/auth/logout", a.auth(a.ctrl.Logout))
-	mux.HandleFunc("GET /api/auth/me", a.auth(a.ctrl.Me))
-	mux.HandleFunc("GET /api/auth/validate", a.auth(a.ctrl.ValidateSession))
-	mux.HandleFunc("GET /api/auth/profile", a.auth(a.ctrl.ProfileStatus))
-	mux.HandleFunc("PUT /api/auth/profile", a.auth(a.ctrl.UpdateProfile))
-	mux.HandleFunc("GET /api/auth/sessions", a.auth(a.ctrl.GetSessions))
-	mux.HandleFunc("DELETE /api/auth/sessions/{sessionId}", a.auth(a.ctrl.RevokeSession))
-	mux.HandleFunc("POST /api/auth/sessions/revoke-all", a.auth(a.ctrl.RevokeAllOtherSessions))
-	mux.HandleFunc("POST /api/auth/logout-all", a.auth(a.ctrl.LogoutAll))
+// Auth — public (no token required) + session management (protected)
+func (a *App) mapAuthRoutes(r chi.Router) {
+	r.Get("/csrf-token", a.ctrl.GetCSRFToken)
+	r.Post("/request-code", a.ctrl.RequestCode)
+	r.Post("/verify", a.ctrl.VerifyCode)
+	r.Post("/refresh", a.ctrl.RefreshToken)
+	r.Get("/google", a.ctrl.GoogleLogin)
+	r.Get("/google/callback", a.ctrl.GoogleCallback)
+	r.Post("/google/verify", a.ctrl.VerifyGoogle)
 
-	// Usage & analytics
-	mux.HandleFunc("GET /api/auth/usage", a.auth(a.ctrl.GetUsage))
-	mux.HandleFunc("POST /api/auth/usage/check", a.auth(a.ctrl.GetUsage))
-	mux.HandleFunc("GET /api/auth/overview/analytics", a.auth(a.ctrl.Overview))
+	r.Post("/logout", a.auth(a.ctrl.Logout))
+	r.Post("/logout-all", a.auth(a.ctrl.LogoutAll))
+	r.Get("/sessions", a.auth(a.ctrl.GetSessions))
+	r.Delete("/sessions/{id}", a.auth(a.ctrl.RevokeSession))
+	r.Post("/sessions/revoke-all", a.auth(a.ctrl.RevokeAllOtherSessions))
+}
 
-	// Scraper
-	mux.HandleFunc("POST /api/auth/scraper/scrape", a.auth(a.ctrl.Scrape))
-	mux.HandleFunc("POST /api/auth/scraper/query", a.auth(a.ctrl.QueryDocuments))
-	mux.HandleFunc("DELETE /api/auth/scraper/delete", a.auth(a.ctrl.DeleteSource))
-	mux.HandleFunc("DELETE /api/auth/scraper/delete-page", a.auth(a.ctrl.DeleteSource))
-	mux.HandleFunc("DELETE /api/auth/scraper/delete-all", a.auth(a.ctrl.DeleteAllSources))
-	mux.HandleFunc("POST /api/auth/scraper/retrain", a.auth(a.ctrl.Scrape))
-	mux.HandleFunc("GET /api/auth/scraper/stats", a.auth(a.ctrl.SourceStats))
-	mux.HandleFunc("GET /api/auth/scraper/sources", a.auth(a.ctrl.GetSources))
+// Me — current user profile & status
+func (a *App) mapMeRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.Me))
+	r.Get("/validate", a.auth(a.ctrl.ValidateSession))
+	r.Get("/profile", a.auth(a.ctrl.ProfileStatus))
+	r.Put("/profile", a.auth(a.ctrl.UpdateProfile))
+	r.Get("/usage", a.auth(a.ctrl.GetUsage))
+	r.Get("/analytics", a.auth(a.ctrl.Overview))
+}
 
-	// Chat
-	mux.HandleFunc("POST /api/auth/chat", a.auth(a.ctrl.Chat))
-	mux.HandleFunc("GET /api/auth/chat/sessions", a.auth(a.ctrl.ChatSessions))
-	mux.HandleFunc("GET /api/auth/chat/session/{sessionId}", a.auth(a.ctrl.ChatSession))
-	mux.HandleFunc("DELETE /api/auth/chat/session/{sessionId}", a.auth(a.ctrl.ClearChatSession))
-	mux.HandleFunc("POST /api/auth/chat/clear-user-sessions", a.auth(a.ctrl.ClearUserSessions))
+// Scraper
+func (a *App) mapScraperRoutes(r chi.Router) {
+	r.Get("/sources", a.auth(a.ctrl.GetSources))
+	r.Get("/stats", a.auth(a.ctrl.SourceStats))
+	r.Post("/sources", a.auth(a.ctrl.Scrape))
+	r.Post("/retrain", a.auth(a.ctrl.Scrape))
+	r.Post("/query", a.auth(a.ctrl.QueryDocuments))
+	r.Delete("/sources", a.auth(a.ctrl.DeleteSource))
+	r.Delete("/sources/page", a.auth(a.ctrl.DeleteSource))
+	r.Delete("/sources/all", a.auth(a.ctrl.DeleteAllSources))
+}
 
-	// Documents
-	mux.HandleFunc("POST /api/auth/documents/upload", a.auth(a.ctrl.UploadDocument))
-	mux.HandleFunc("POST /api/auth/documents/upload-multiple", a.auth(a.ctrl.UploadMultipleDocuments))
+// Chat
+func (a *App) mapChatRoutes(r chi.Router) {
+	r.Post("/", a.auth(a.ctrl.Chat))
+	r.Get("/sessions", a.auth(a.ctrl.ChatSessions))
+	r.Get("/sessions/{id}", a.auth(a.ctrl.ChatSession))
+	r.Delete("/sessions/{id}", a.auth(a.ctrl.ClearChatSession))
+	r.Delete("/sessions", a.auth(a.ctrl.ClearUserSessions))
+}
 
-	// Widget
-	mux.HandleFunc("POST /api/auth/widget/create", a.auth(a.ctrl.CreateWidget))
-	mux.HandleFunc("GET /api/auth/widget/key", a.auth(a.ctrl.GetWidget))
-	mux.HandleFunc("PUT /api/auth/widget/update", a.auth(a.ctrl.UpdateWidget))
-	mux.HandleFunc("POST /api/auth/widget/regenerate", a.auth(a.ctrl.RegenerateWidget))
-	mux.HandleFunc("DELETE /api/auth/widget/delete", a.auth(a.ctrl.DeleteWidget))
-	mux.HandleFunc("GET /api/auth/widget/analytics", a.auth(a.ctrl.WidgetAnalytics))
+// Documents
+func (a *App) mapDocumentRoutes(r chi.Router) {
+	r.Post("/", a.auth(a.ctrl.UploadDocument))
+	r.Post("/batch", a.auth(a.ctrl.UploadMultipleDocuments))
+}
 
-	// Leads
-	mux.HandleFunc("GET /api/auth/leads", a.auth(a.ctrl.ListLeads))
-	mux.HandleFunc("GET /api/auth/leads/{id}", a.auth(a.ctrl.GetLead))
-	mux.HandleFunc("PATCH /api/auth/leads/{id}/status", a.auth(a.ctrl.UpdateLeadStatus))
-	mux.HandleFunc("DELETE /api/auth/leads/{id}", a.auth(a.ctrl.DeleteLead))
-	mux.HandleFunc("GET /api/auth/leads/webhook", a.auth(a.ctrl.GetLeadWebhook))
-	mux.HandleFunc("PUT /api/auth/leads/webhook", a.auth(a.ctrl.UpsertLeadWebhook))
-	mux.HandleFunc("POST /api/auth/leads/webhook/test", a.auth(a.ctrl.LeadWebhookTest))
-	mux.HandleFunc("GET /api/auth/leads/webhook/events", a.auth(a.ctrl.ListWebhookEvents))
-	mux.HandleFunc("POST /api/auth/leads/webhook/events/{eventId}/retry", a.auth(a.ctrl.RetryWebhookEvent))
+// Widget
+func (a *App) mapWidgetRoutes(r chi.Router) {
+	r.Post("/", a.auth(a.ctrl.CreateWidget))
+	r.Get("/", a.auth(a.ctrl.GetWidget))
+	r.Put("/", a.auth(a.ctrl.UpdateWidget))
+	r.Post("/regenerate", a.auth(a.ctrl.RegenerateWidget))
+	r.Delete("/", a.auth(a.ctrl.DeleteWidget))
+	r.Get("/analytics", a.auth(a.ctrl.WidgetAnalytics))
+}
 
-	// Feedback
-	mux.HandleFunc("GET /api/auth/feedback", a.auth(a.ctrl.ListFeedback))
-	mux.HandleFunc("POST /api/auth/feedback", a.auth(a.ctrl.CreateFeedback))
+// Leads
+func (a *App) mapLeadsRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListLeads))
+	r.Get("/webhook", a.auth(a.ctrl.GetLeadWebhook))
+	r.Put("/webhook", a.auth(a.ctrl.UpsertLeadWebhook))
+	r.Post("/webhook/test", a.auth(a.ctrl.LeadWebhookTest))
+	r.Get("/webhook/events", a.auth(a.ctrl.ListWebhookEvents))
+	r.Post("/webhook/events/{id}/retry", a.auth(a.ctrl.RetryWebhookEvent))
+	r.Get("/{id}", a.auth(a.ctrl.GetLead))
+	r.Patch("/{id}/status", a.auth(a.ctrl.UpdateLeadStatus))
+	r.Delete("/{id}", a.auth(a.ctrl.DeleteLead))
+}
 
-	// Admin
-	mux.HandleFunc("POST /api/admin/login", a.ctrl.AdminLogin)
-	mux.HandleFunc("GET /api/admin/dashboard", a.admin(a.ctrl.AdminDashboard))
-	mux.HandleFunc("GET /api/admin/insights", a.admin(a.ctrl.AdminInsights))
-	mux.HandleFunc("GET /api/admin/users", a.admin(a.ctrl.AdminUsers))
-	mux.HandleFunc("POST /api/admin/actions/reset-usage", a.admin(a.ctrl.AdminResetUsage))
-	mux.HandleFunc("POST /api/admin/actions/force-logout", a.admin(a.ctrl.AdminForceLogout))
-	mux.HandleFunc("POST /api/admin/actions/set-plan", a.admin(a.ctrl.AdminSetPlan))
+// Feedback
+func (a *App) mapFeedbackRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListFeedback))
+	r.Post("/", a.auth(a.ctrl.CreateFeedback))
+}
 
-	// Public widget API
-	mux.HandleFunc("GET /api/v1/widget/config/{widgetKey}", a.ctrl.PublicWidgetConfig)
-	mux.HandleFunc("POST /api/v1/webhook", a.ctrl.PublicWebhook)
-	mux.HandleFunc("GET /api/v1/widget/embed.js", a.ctrl.EmbedJS)
-	mux.HandleFunc("GET /api/v1/embed/", a.ctrl.EmbedForWidget)
-	mux.HandleFunc("POST /api/v1/widget/contact", a.ctrl.PublicContact)
-	mux.HandleFunc("POST /api/v1/widget/rating", a.ctrl.PublicRating)
+// Admin
+func (a *App) mapAdminRoutes(r chi.Router) {
+	r.Post("/login", a.ctrl.AdminLogin)
+	r.Get("/dashboard", a.admin(a.ctrl.AdminDashboard))
+	r.Get("/insights", a.admin(a.ctrl.AdminInsights))
+	r.Get("/users", a.admin(a.ctrl.AdminUsers))
+	r.Post("/actions/reset-usage", a.admin(a.ctrl.AdminResetUsage))
+	r.Post("/actions/force-logout", a.admin(a.ctrl.AdminForceLogout))
+	r.Post("/actions/set-plan", a.admin(a.ctrl.AdminSetPlan))
+}
+
+// Public widget API (versioned, no auth)
+func (a *App) mapPublicV1Routes(r chi.Router) {
+	r.Get("/widget/config/{widgetKey}", a.ctrl.PublicWidgetConfig)
+	r.Post("/webhook", a.ctrl.PublicWebhook)
+	r.Get("/widget/embed.js", a.ctrl.EmbedJS)
+	r.Get("/embed/", a.ctrl.EmbedForWidget)
+	r.Post("/widget/contact", a.ctrl.PublicContact)
+	r.Post("/widget/rating", a.ctrl.PublicRating)
 }

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"konvoq-backend/config"
 	"konvoq-backend/controller"
 	"konvoq-backend/middleware"
@@ -61,9 +63,12 @@ func (a *App) admin(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *App) Handler() http.Handler {
-	mux := http.NewServeMux()
-	a.registerRoutes(mux)
-	return middleware.WithCommonHeaders(mux, a.cfg.CORSAllowedOrigins)
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return middleware.WithCommonHeaders(next, a.cfg.CORSAllowedOrigins)
+	})
+	a.registerRoutes(r)
+	return r
 }
 
 func Run() error {
