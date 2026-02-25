@@ -45,27 +45,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE TABLE IF NOT EXISTS chat_messages_default
   PARTITION OF chat_messages DEFAULT;
 
-DO $$
-DECLARE
-  month_start DATE := date_trunc('month', CURRENT_DATE)::date;
-  next_month DATE := (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date;
-  month_after_next DATE := (date_trunc('month', CURRENT_DATE) + INTERVAL '2 month')::date;
-BEGIN
-  EXECUTE format(
-    'CREATE TABLE IF NOT EXISTS chat_messages_%s PARTITION OF chat_messages FOR VALUES FROM (%L) TO (%L)',
-    to_char(month_start, 'YYYYMM'),
-    month_start::text,
-    next_month::text
-  );
-
-  EXECUTE format(
-    'CREATE TABLE IF NOT EXISTS chat_messages_%s PARTITION OF chat_messages FOR VALUES FROM (%L) TO (%L)',
-    to_char(next_month, 'YYYYMM'),
-    next_month::text,
-    month_after_next::text
-  );
-END $$;
-
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created
   ON chat_messages(conversation_id, created_at DESC, id DESC);
 

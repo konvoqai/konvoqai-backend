@@ -1,12 +1,10 @@
 -- Migration: 20260221_013_partition_maintenance
 --
--- Creates a reusable function that ensures the next 3 calendar months of
--- chat_messages partitions always exist, then optionally schedules it with
--- pg_cron if the extension is available.
+-- Creates a reusable helper function for creating the next 3 calendar months of
+-- chat_messages partitions.
 --
--- The Node.js maintenanceWorker runs the same logic on startup and every 24 h,
--- so this migration is an optional belt-and-suspenders layer for environments
--- where pg_cron is enabled.
+-- NOTE: this migration only defines the helper; it does not execute it and does
+-- not schedule it automatically.
 
 -- --- Partition helper function -----------------------------------------------
 
@@ -36,40 +34,8 @@ BEGIN
 END;
 $$;
 
--- Run immediately so the current migration also backfills any missing partitions
-SELECT ensure_chat_message_partitions();
-
--- --- pg_cron schedule (only if extension is available) -----------------------
---
--- pg_cron must be in shared_preload_libraries and the extension must be
--- installed.  The DO block is wrapped in an exception handler so the migration
--- succeeds even on instances without pg_cron (e.g. local dev, managed Postgres
--- tiers that do not expose it).
-
-DO $$
-BEGIN
-  -- Check whether pg_cron is installed before trying to schedule
-  IF EXISTS (
-    SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
-  ) THEN
-    -- Remove any existing schedule with the same name to keep this idempotent
-    PERFORM cron.unschedule('ensure-chat-partitions')
-    WHERE EXISTS (
-      SELECT 1 FROM cron.job WHERE jobname = 'ensure-chat-partitions'
-    );
-
-    -- Run on the 20th of every month at 00:05 UTC — well before the new month
-    PERFORM cron.schedule(
-      'ensure-chat-partitions',
-      '5 0 20 * *',
-      'SELECT ensure_chat_message_partitions()'
-    );
-
-    RAISE NOTICE 'pg_cron schedule "ensure-chat-partitions" created.';
-  ELSE
-    RAISE NOTICE 'pg_cron extension not found — partition creation is handled by the Node.js maintenanceWorker instead.';
-  END IF;
-END $$;
+-- To execute manually (for example from maintenance tooling), run:
+-- SELECT ensure_chat_message_partitions();
 
 -- --- widget_analytics cleanup function ---------------------------------------
 

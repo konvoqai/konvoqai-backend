@@ -597,7 +597,6 @@ func (c *Handler) StartBackgroundWorkers(ctx context.Context) {
 			case <-webhookTicker.C:
 				c.processPendingWebhookEvents(context.Background())
 			case <-maintenanceTicker.C:
-				_, _ = c.db.Exec(`SELECT ensure_chat_message_partitions() WHERE EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'ensure_chat_message_partitions')`)
 				_, _ = c.db.Exec(`UPDATE sessions SET is_revoked=TRUE WHERE (refresh_token_expires_at < CURRENT_TIMESTAMP OR refresh_token_expires_at IS NULL) AND is_revoked=FALSE`)
 				_, _ = c.db.Exec(`DELETE FROM verification_codes WHERE expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'`)
 				_, _ = c.db.Exec(`DELETE FROM widget_analytics WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'`)
