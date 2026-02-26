@@ -53,6 +53,7 @@ func (a *App) mapMeRoutes(r chi.Router) {
 func (a *App) mapScraperRoutes(r chi.Router) {
 	r.Get("/sources", a.auth(a.ctrl.GetSources))
 	r.Get("/stats", a.auth(a.ctrl.SourceStats))
+	r.Get("/jobs/{id}", a.auth(a.ctrl.GetScrapeJob))
 	r.Post("/sources", a.auth(a.ctrl.Scrape))
 	r.Post("/retrain", a.auth(a.ctrl.Scrape))
 	r.Post("/query", a.auth(a.ctrl.QueryDocuments))

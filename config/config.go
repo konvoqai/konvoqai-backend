@@ -47,6 +47,8 @@ type Config struct {
 	PineconeAPIKey      string
 	PineconeIndexName   string
 	PineconeEnvironment string
+	PineconeHost        string
+	PineconeDimension   int
 
 	EmailHost     string
 	EmailPort     int
@@ -190,6 +192,8 @@ func Load() Config {
 		PineconeAPIKey:      getEnv("PINECONE_API_KEY", ""),
 		PineconeIndexName:   getEnv("PINECONE_INDEX_NAME", ""),
 		PineconeEnvironment: getEnv("PINECONE_ENVIRONMENT", ""),
+		PineconeHost:        getEnv("PINECONE_HOST", ""),
+		PineconeDimension:   getEnvInt("PINECONE_DIMENSION", 0),
 
 		EmailHost:     getEnv("EMAIL_HOST", ""),
 		EmailPort:     getEnvInt("EMAIL_PORT", 587),

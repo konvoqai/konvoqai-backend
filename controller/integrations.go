@@ -343,11 +343,14 @@ func (c *Controller) openAIAnswerWithContext(query string, matches []map[string]
 	return c.openAIChat(prompt)
 }
 
-func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
+func (c *Controller) openAIEmbedding(input string, dimensions int) ([]float64, error) {
 	if strings.TrimSpace(c.cfg.OpenAIAPIKey) == "" {
 		return nil, nil
 	}
 	payload := map[string]interface{}{"model": "text-embedding-3-small", "input": input}
+	if dimensions > 0 {
+		payload["dimensions"] = dimensions
+	}
 	b, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/embeddings", bytes.NewReader(b))
 	if err != nil {
@@ -388,22 +391,109 @@ func (c *Controller) openAIEmbedding(input string) ([]float64, error) {
 
 // ── Pinecone ───────────────────────────────────────────────────────────────────
 
-func (c *Controller) pineconeHost() string {
-	if strings.TrimSpace(c.cfg.PineconeIndexName) == "" || strings.TrimSpace(c.cfg.PineconeEnvironment) == "" {
+type pineconeIndexInfo struct {
+	Host      string
+	Dimension int
+}
+
+func (c *Controller) pineconeIndexInfo() (pineconeIndexInfo, error) {
+	info := pineconeIndexInfo{
+		Host:      normalizePineconeHost(c.cfg.PineconeHost),
+		Dimension: c.cfg.PineconeDimension,
+	}
+
+	if strings.TrimSpace(c.cfg.PineconeIndexName) == "" || strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
+		if info.Host == "" {
+			return info, errors.New("missing pinecone index configuration")
+		}
+		return info, nil
+	}
+
+	resolved, err := c.resolvePineconeIndexInfoFromControlPlane(c.cfg.PineconeIndexName)
+	if err != nil {
+		if info.Host != "" {
+			c.logger.Warn("pinecone index metadata resolve failed; using explicit host override",
+				"index", c.cfg.PineconeIndexName,
+				"error", err,
+			)
+			return info, nil
+		}
+		return info, err
+	}
+
+	if info.Host == "" {
+		info.Host = resolved.Host
+	}
+	if info.Dimension <= 0 {
+		info.Dimension = resolved.Dimension
+	}
+
+	return info, nil
+}
+
+func normalizePineconeHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if host == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://%s-%s.svc.pinecone.io", c.cfg.PineconeIndexName, c.cfg.PineconeEnvironment)
+	if strings.HasPrefix(host, "https://") || strings.HasPrefix(host, "http://") {
+		return host
+	}
+	return "https://" + host
+}
+
+func (c *Controller) resolvePineconeIndexInfoFromControlPlane(indexName string) (pineconeIndexInfo, error) {
+	var info pineconeIndexInfo
+	endpoint := "https://api.pinecone.io/indexes/" + url.PathEscape(strings.TrimSpace(indexName))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return info, err
+	}
+	req.Header.Set("Api-Key", c.cfg.PineconeAPIKey)
+	req.Header.Set("Accept", "application/json")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return info, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return info, fmt.Errorf("describe index status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out struct {
+		Host      string `json:"host"`
+		Dimension int    `json:"dimension"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return info, err
+	}
+	host := normalizePineconeHost(out.Host)
+	if host == "" {
+		return info, errors.New("empty host from pinecone control api")
+	}
+	info.Host = host
+	info.Dimension = out.Dimension
+	return info, nil
 }
 
 func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil
 	}
-	host := c.pineconeHost()
-	if host == "" {
-		return nil
+	indexInfo, err := c.pineconeIndexInfo()
+	if err != nil {
+		return err
 	}
-	emb, err := c.openAIEmbedding(content)
+	if indexInfo.Host == "" {
+		return errors.New("pinecone host could not be resolved; set PINECONE_HOST or verify PINECONE_INDEX_NAME")
+	}
+	emb, err := c.openAIEmbedding(content, indexInfo.Dimension)
 	if err != nil || len(emb) == 0 {
 		if err != nil {
 			c.logger.Warn("pinecone upsert embedding failed", "user_id", userID, "source_url", sourceURL, "error", err)
@@ -423,7 +513,7 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 		}},
 	}
 	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, host+"/vectors/upsert", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, indexInfo.Host+"/vectors/upsert", bytes.NewReader(b))
 	if err != nil {
 		c.logger.Error("pinecone upsert request build failed", "error", err)
 		return err
@@ -452,11 +542,14 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil, nil
 	}
-	host := c.pineconeHost()
-	if host == "" {
+	indexInfo, err := c.pineconeIndexInfo()
+	if err != nil {
+		return nil, err
+	}
+	if indexInfo.Host == "" {
 		return nil, nil
 	}
-	emb, err := c.openAIEmbedding(query)
+	emb, err := c.openAIEmbedding(query, indexInfo.Dimension)
 	if err != nil || len(emb) == 0 {
 		if err != nil {
 			c.logger.Warn("pinecone query embedding failed", "user_id", userID, "error", err)
@@ -475,7 +568,7 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 		},
 	}
 	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, host+"/query", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, indexInfo.Host+"/query", bytes.NewReader(b))
 	if err != nil {
 		c.logger.Error("pinecone query request build failed", "error", err)
 		return nil, err

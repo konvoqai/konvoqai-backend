@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"konvoq-backend/utils"
 )
 
@@ -17,26 +19,126 @@ func (c *Controller) Scrape(w http.ResponseWriter, r *http.Request, claims Token
 		utils.JSONErr(w, http.StatusBadRequest, "url is required")
 		return
 	}
+	sourceURL := strings.TrimSpace(body.URL)
 	_, err := c.db.Exec(`INSERT INTO scraper_sources (user_id,source_url,source_title) VALUES ($1,$2,$2) ON CONFLICT (user_id,source_url) DO UPDATE SET source_title=EXCLUDED.source_title`,
-		claims.UserID, strings.TrimSpace(body.URL))
+		claims.UserID, sourceURL)
 	if err != nil {
-		c.logRequestError(r, "scrape source upsert failed", err, "user_id", claims.UserID, "url", strings.TrimSpace(body.URL))
+		c.logRequestError(r, "scrape source upsert failed", err, "user_id", claims.UserID, "url", sourceURL)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	go func(userID, sourceURL string) {
-		text, err := c.extractTextFromURL(sourceURL)
-		if err != nil || strings.TrimSpace(text) == "" {
-			if err != nil {
-				c.logger.Warn("scrape extraction failed", "user_id", userID, "url", sourceURL, "error", err)
-			}
+
+	var jobID string
+	if err := c.db.QueryRow(`INSERT INTO scrape_jobs (user_id,source_url,status,progress,message,started_at)
+		VALUES ($1,$2,'queued',5,'Queued for scraping',CURRENT_TIMESTAMP) RETURNING id`,
+		claims.UserID, sourceURL).Scan(&jobID); err != nil {
+		c.logRequestError(r, "scrape job insert failed", err, "user_id", claims.UserID, "url", sourceURL)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	go c.runScrapeJob(claims.UserID, sourceURL, jobID)
+
+	utils.JSONOK(w, map[string]interface{}{
+		"success":  true,
+		"message":  "scrape started",
+		"url":      sourceURL,
+		"jobId":    jobID,
+		"status":   "queued",
+		"progress": 5,
+	})
+}
+
+func (c *Controller) runScrapeJob(userID, sourceURL, jobID string) {
+	c.updateScrapeJob(jobID, "scraping", 20, "Fetching website content", "")
+	text, err := c.extractTextFromURL(sourceURL)
+	if err != nil {
+		c.logger.Warn("scrape extraction failed", "user_id", userID, "url", sourceURL, "job_id", jobID, "error", err)
+		c.updateScrapeJob(jobID, "failed", 100, "Scraping failed", err.Error())
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		errMsg := "no text content found at url"
+		c.logger.Warn("scrape extraction produced empty content", "user_id", userID, "url", sourceURL, "job_id", jobID)
+		c.updateScrapeJob(jobID, "failed", 100, "Scraping failed", errMsg)
+		return
+	}
+
+	c.updateScrapeJob(jobID, "scraping", 65, "Processing extracted content", "")
+	c.updateScrapeJob(jobID, "indexing", 85, "Indexing content", "")
+
+	if err := c.pineconeUpsert(userID, sourceURL, text); err != nil {
+		c.logger.Warn("scrape index upsert failed", "user_id", userID, "url", sourceURL, "job_id", jobID, "error", err)
+		c.updateScrapeJob(jobID, "failed", 100, "Indexing failed", err.Error())
+		return
+	}
+
+	c.updateScrapeJob(jobID, "done", 100, "Scraping complete", "")
+}
+
+func (c *Controller) updateScrapeJob(jobID, status string, progress int, message, errMsg string) {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	completedAt := "NULL"
+	if status == "done" || status == "failed" {
+		completedAt = "CURRENT_TIMESTAMP"
+	}
+	if _, err := c.db.Exec(`UPDATE scrape_jobs
+		SET status=$2,progress=$3,message=$4,error_message=$5,
+		    completed_at=`+completedAt+`,updated_at=CURRENT_TIMESTAMP
+		WHERE id=$1`, jobID, status, progress, utils.Nullable(message), utils.Nullable(errMsg)); err != nil {
+		c.logger.Warn("scrape job update failed", "job_id", jobID, "status", status, "error", err)
+	}
+}
+
+func (c *Controller) GetScrapeJob(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+	jobID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if jobID == "" {
+		utils.JSONErr(w, http.StatusBadRequest, "job id is required")
+		return
+	}
+
+	var sourceURL, status string
+	var progress int
+	var message, errMsg sql.NullString
+	var createdAt, updatedAt time.Time
+	var startedAt, completedAt sql.NullTime
+
+	err := c.db.QueryRow(`SELECT source_url,status,progress,message,error_message,created_at,started_at,completed_at,updated_at
+		FROM scrape_jobs WHERE id=$1 AND user_id=$2`,
+		jobID, claims.UserID).Scan(
+		&sourceURL, &status, &progress, &message, &errMsg,
+		&createdAt, &startedAt, &completedAt, &updatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			utils.JSONErr(w, http.StatusNotFound, "scrape job not found")
 			return
 		}
-		if err := c.pineconeUpsert(userID, sourceURL, text); err != nil {
-			c.logger.Warn("scrape index upsert failed", "user_id", userID, "url", sourceURL, "error", err)
-		}
-	}(claims.UserID, strings.TrimSpace(body.URL))
-	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "scrape queued", "url": body.URL})
+		c.logRequestError(r, "get scrape job query failed", err, "user_id", claims.UserID, "job_id", jobID)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	utils.JSONOK(w, map[string]interface{}{
+		"success": true,
+		"job": map[string]interface{}{
+			"id":          jobID,
+			"url":         sourceURL,
+			"status":      status,
+			"progress":    progress,
+			"message":     utils.NullString(message),
+			"error":       utils.NullString(errMsg),
+			"createdAt":   createdAt,
+			"startedAt":   utils.NullTime(startedAt),
+			"completedAt": utils.NullTime(completedAt),
+			"updatedAt":   updatedAt,
+		},
+	})
 }
 
 func (c *Controller) QueryDocuments(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
@@ -104,14 +206,24 @@ func (c *Controller) DeleteAllSources(w http.ResponseWriter, r *http.Request, cl
 }
 
 func (c *Controller) SourceStats(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	var sources, docs int
+	var sources, docs, pendingJobs int
 	if err := c.db.QueryRow(`SELECT COUNT(*) FROM scraper_sources WHERE user_id=$1`, claims.UserID).Scan(&sources); err != nil {
 		c.logRequestWarn(r, "source stats source count failed", err, "user_id", claims.UserID)
 	}
 	if err := c.db.QueryRow(`SELECT COUNT(*) FROM documents WHERE user_id=$1`, claims.UserID).Scan(&docs); err != nil {
 		c.logRequestWarn(r, "source stats document count failed", err, "user_id", claims.UserID)
 	}
-	utils.JSONOK(w, map[string]interface{}{"success": true, "stats": map[string]int{"sources": sources, "documents": docs}})
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM scrape_jobs WHERE user_id=$1 AND status IN ('queued','scraping','indexing')`, claims.UserID).Scan(&pendingJobs); err != nil {
+		c.logRequestWarn(r, "source stats scrape jobs count failed", err, "user_id", claims.UserID)
+	}
+	utils.JSONOK(w, map[string]interface{}{
+		"success": true,
+		"stats": map[string]int{
+			"sources":     sources,
+			"documents":   docs,
+			"pendingJobs": pendingJobs,
+		},
+	})
 }
 
 func (c *Controller) GetSources(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
