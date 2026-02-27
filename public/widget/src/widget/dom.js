@@ -29,14 +29,32 @@ export function collectElements(shadowRoot) {
 }
 
 export function applyTheme(host, config) {
+	const primaryColor = config.primaryColor || config.sendColor || "#fc0e3f";
+	const backgroundColor = config.backgroundColor || config.bannerColor || "#120b14";
+	const textColor = config.textColor || config.bannerTextColor || "#ffffff";
+	const subtitleColor = config.bannerTextParagraphColor || config.subtitleColor || "#94a3b8";
+	const position = config.position === "bottom-left" ? "bottom-left" : "bottom-right";
+	const borderRadius =
+		typeof config.borderRadius === "number"
+			? `${config.borderRadius}px`
+			: String(config.borderRadius || "24px");
+	const fontSize =
+		typeof config.fontSize === "number" ? `${config.fontSize}px` : String(config.fontSize || "14px");
+
 	const theme = {
-		"--kv-banner-color": config.bannerColor || "#120b14",
-		"--kv-banner-text-color": config.bannerTextColor || "#ffffff",
-		"--kv-banner-subtext-color": config.bannerTextParagraphColor || "#94a3b8",
+		"--kv-banner-color": backgroundColor,
+		"--kv-banner-text-color": textColor,
+		"--kv-banner-subtext-color": subtitleColor,
 		"--kv-user-chat-color": config.userChatColor || "#ffdce4",
-		"--kv-send-color": config.sendColor || "#fc0e3f",
-		"--kv-floating-btn-color": config.floatingBtn || config.floatingBtnColor || "#fc0e3f",
+		"--kv-send-color": primaryColor,
+		"--kv-floating-btn-color": primaryColor,
 		"--kv-close-button-color": config.closeButtonColor || "#ffffff",
+		"--kv-widget-radius": borderRadius,
+		"--kv-widget-font-size": fontSize,
+		"--kv-widget-right": position === "bottom-left" ? "auto" : "2em",
+		"--kv-widget-left": position === "bottom-left" ? "2em" : "auto",
+		"--kv-floating-right": position === "bottom-left" ? "auto" : "45px",
+		"--kv-floating-left": position === "bottom-left" ? "45px" : "auto",
 	};
 
 	Object.keys(theme).forEach((variable) => {
@@ -46,11 +64,11 @@ export function applyTheme(host, config) {
 
 export function applyHeaderContent(elements, config) {
 	if (elements.bannerText) {
-		elements.bannerText.textContent = config.bannerText || "Text Chat";
+		elements.bannerText.textContent = config.botName || config.bannerText || "Text Chat";
 	}
 
 	if (elements.bannerSubText) {
-		const subtitle = (config.bannerTextParagraph || "").trim();
+		const subtitle = (config.welcomeMessage || config.bannerTextParagraph || "").trim();
 		elements.bannerSubText.textContent = subtitle;
 		elements.bannerSubText.classList.toggle("hidden", !subtitle);
 	}

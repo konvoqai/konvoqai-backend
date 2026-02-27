@@ -70,6 +70,7 @@ type UserRecord struct {
 	ProfileCompleted      bool
 	ProfilePromptRequired sql.NullTime
 	ProfileCompletedAt    sql.NullTime
+	OnboardingCompletedAt sql.NullTime
 }
 
 func (c *Controller) GoogleLogin(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +88,13 @@ func scanUser(row *sql.Row) (UserRecord, error) {
 		&u.ConversationsUsed, &u.ConversationsLimit, &u.PlanResetDate,
 		&u.LoginCount, &u.FullName, &u.CompanyName, &u.PhoneNumber,
 		&u.Country, &u.JobTitle, &u.Industry, &u.CompanyWebsite,
-		&u.ProfileCompleted, &u.ProfilePromptRequired, &u.ProfileCompletedAt,
+		&u.ProfileCompleted, &u.ProfilePromptRequired, &u.ProfileCompletedAt, &u.OnboardingCompletedAt,
 	)
 	return u, err
 }
 
 func userResponse(u UserRecord, sessionID int64) map[string]interface{} {
+	limits := limitsForPlan(u.PlanType)
 	return map[string]interface{}{
 		"id":                        u.ID,
 		"email":                     u.Email,
@@ -111,6 +113,12 @@ func userResponse(u UserRecord, sessionID int64) map[string]interface{} {
 		"requiresProfileCompletion": !u.ProfileCompleted && u.LoginCount > 3,
 		"profilePromptRequiredAt":   utils.NullTime(u.ProfilePromptRequired),
 		"profileCompletedAt":        utils.NullTime(u.ProfileCompletedAt),
+		"onboardingCompleted":       u.OnboardingCompletedAt.Valid,
+		"onboardingCompletedAt":     utils.NullTime(u.OnboardingCompletedAt),
+		"planLimits": map[string]int{
+			"scrapedPages": limits.ScrapedPages,
+			"documents":    limits.Documents,
+		},
 	}
 }
 

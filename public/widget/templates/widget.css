@@ -16,6 +16,12 @@
 	--kv-send-color: #fc0e3f;
 	--kv-floating-btn-color: #fc0e3f;
 	--kv-close-button-color: #ffffff;
+	--kv-widget-radius: 24px;
+	--kv-widget-font-size: 14px;
+	--kv-widget-right: 2em;
+	--kv-widget-left: auto;
+	--kv-floating-right: 45px;
+	--kv-floating-left: auto;
 }
 
 .hidden {
@@ -25,7 +31,8 @@
 #textChatWidget {
 	position: fixed;
 	bottom: 6em;
-	right: 2em;
+	right: var(--kv-widget-right);
+	left: var(--kv-widget-left);
 	z-index: 9999;
 	width: 27rem;
 	height: 100%;
@@ -33,9 +40,10 @@
 	max-height: 70vh;
 	display: flex;
 	flex-direction: column;
-	border-radius: 1.5rem;
+	border-radius: var(--kv-widget-radius);
 	overflow: hidden;
 	background: #ffffff;
+	font-size: var(--kv-widget-font-size);
 	transition: width 0.3s ease, max-width 0.3s ease, max-height 0.3s ease;
 }
 
@@ -280,7 +288,8 @@
 
 #floatingBtn {
 	position: fixed;
-	right: 45px;
+	right: var(--kv-floating-right);
+	left: var(--kv-floating-left);
 	bottom: 15px;
 	z-index: 9999;
 	animation: float 3s ease-in-out infinite;
@@ -450,6 +459,7 @@
 @media (max-width: 640px) {
 	#textChatWidget {
 		right: 1rem;
+		left: auto;
 		bottom: 5.25rem;
 		max-width: calc(100vw - 2rem);
 		max-height: 72vh;
@@ -457,6 +467,7 @@
 
 	#floatingBtn {
 		right: 16px;
+		left: auto;
 		bottom: 16px;
 	}
 }

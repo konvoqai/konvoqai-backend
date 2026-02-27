@@ -17,6 +17,15 @@ export const SUPPORTED_LANGUAGES = [
 ];
 
 export const DEFAULT_CONFIG = {
+	primaryColor: "#fc0e3f",
+	backgroundColor: "#120b14",
+	textColor: "#ffffff",
+	botName: "Text Chat",
+	welcomeMessage: "",
+	logoUrl: null,
+	position: "bottom-right",
+	borderRadius: 24,
+	fontSize: 14,
 	primaryText: null,
 	botColor: "#fc0e3f",
 	sendColor: "#fc0e3f",
@@ -38,6 +47,15 @@ export const DEFAULT_CONFIG = {
 };
 
 export const CONFIG_ATTRIBUTES = [
+	"primary-color",
+	"background-color",
+	"text-color",
+	"bot-name",
+	"welcome-message",
+	"logo-url",
+	"position",
+	"border-radius",
+	"font-size",
 	"primary-text",
 	"bot-color",
 	"send-color",

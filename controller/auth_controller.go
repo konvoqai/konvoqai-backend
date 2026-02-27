@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -36,7 +37,7 @@ func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord,
 	h := utils.HashToken(raw)
 	row := c.db.QueryRow(`SELECT u.id,u.email,u.is_verified,u.plan_type,u.conversations_used,u.conversations_limit,u.plan_reset_date,
 		u.login_count,u.full_name,u.company_name,u.phone_number,u.country,u.job_title,u.industry,u.company_website,
-		u.profile_completed,u.profile_prompt_required_at,u.profile_completed_at
+		u.profile_completed,u.profile_prompt_required_at,u.profile_completed_at,u.onboarding_completed_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.id=$1 AND s.user_id=$2 AND s.access_token=$3 AND s.is_revoked=FALSE`, claims.SessionID, claims.UserID, h)
 	user, err := scanUser(row)
@@ -197,7 +198,7 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	var user UserRecord
 	row := tx.QueryRow(`SELECT id,email,is_verified,plan_type,conversations_used,conversations_limit,plan_reset_date,
 		login_count,full_name,company_name,phone_number,country,job_title,industry,company_website,
-		profile_completed,profile_prompt_required_at,profile_completed_at
+		profile_completed,profile_prompt_required_at,profile_completed_at,onboarding_completed_at
 		FROM users WHERE email=$1`, email)
 	user, err = scanUser(row)
 	if err != nil {
@@ -271,9 +272,17 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusInternalServerError, "session update failed")
 		return
 	}
+
+	// Ensure each user has a stable widget key from onboarding onwards.
+	if _, err := tx.Exec(`INSERT INTO widget_keys (user_id, widget_key, widget_name, widget_config, is_active)
+		VALUES ($1, $2, 'My Chat Widget', '{}'::jsonb, TRUE)
+		ON CONFLICT (user_id) DO NOTHING`, user.ID, generateWidgetKey()); err != nil {
+		c.logRequestWarn(r, "verify code ensure widget key failed", err, "user_id", user.ID)
+	}
+
 	row = tx.QueryRow(`SELECT id,email,is_verified,plan_type,conversations_used,conversations_limit,plan_reset_date,
 		login_count,full_name,company_name,phone_number,country,job_title,industry,company_website,
-		profile_completed,profile_prompt_required_at,profile_completed_at
+		profile_completed,profile_prompt_required_at,profile_completed_at,onboarding_completed_at
 		FROM users WHERE id=$1`, user.ID)
 	updatedUser, err := scanUser(row)
 	if err != nil {
@@ -380,6 +389,45 @@ func (c *Controller) ProfileStatus(w http.ResponseWriter, _ *http.Request, claim
 	utils.JSONOK(w, map[string]interface{}{"success": true, "profileCompleted": user.ProfileCompleted, "plan": user.PlanType, "user": userResponse(user, claims.SessionID)})
 }
 
+func (c *Controller) CompleteOnboarding(w http.ResponseWriter, r *http.Request, claims TokenClaims, user UserRecord) {
+	if user.OnboardingCompletedAt.Valid {
+		utils.JSONOK(w, map[string]interface{}{
+			"success":               true,
+			"onboardingCompleted":   true,
+			"onboardingCompletedAt": user.OnboardingCompletedAt.Time,
+		})
+		return
+	}
+
+	var cfgRaw []byte
+	if err := c.db.QueryRow(`SELECT widget_config FROM widget_keys WHERE user_id=$1 AND is_active=TRUE`, claims.UserID).Scan(&cfgRaw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			utils.JSONErr(w, http.StatusConflict, "save widget configuration before completing onboarding")
+			return
+		}
+		c.logRequestError(r, "complete onboarding widget lookup failed", err, "user_id", claims.UserID)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	cfg := map[string]interface{}{}
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil || !isWidgetConfigured(cfg) {
+		utils.JSONErr(w, http.StatusConflict, "save widget configuration before completing onboarding")
+		return
+	}
+
+	if _, err := c.db.Exec(`UPDATE users SET onboarding_completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id=$1`, claims.UserID); err != nil {
+		c.logRequestError(r, "complete onboarding update failed", err, "user_id", claims.UserID)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	utils.JSONOK(w, map[string]interface{}{
+		"success":             true,
+		"onboardingCompleted": true,
+	})
+}
+
 func (c *Controller) UpdateProfile(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
 		FullName       string `json:"full_name"`
@@ -414,7 +462,7 @@ func (c *Controller) UpdateProfile(w http.ResponseWriter, r *http.Request, claim
 	}
 	row := c.db.QueryRow(`SELECT id,email,is_verified,plan_type,conversations_used,conversations_limit,plan_reset_date,
 		login_count,full_name,company_name,phone_number,country,job_title,industry,company_website,
-		profile_completed,profile_prompt_required_at,profile_completed_at FROM users WHERE id=$1`, claims.UserID)
+		profile_completed,profile_prompt_required_at,profile_completed_at,onboarding_completed_at FROM users WHERE id=$1`, claims.UserID)
 	u, err := scanUser(row)
 	if err != nil {
 		c.logRequestError(r, "update profile user reload failed", err, "user_id", claims.UserID)

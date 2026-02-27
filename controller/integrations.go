@@ -339,7 +339,15 @@ func (c *Controller) openAIAnswerWithContext(query string, matches []map[string]
 	if len(contextParts) > 0 {
 		contextBlock = strings.Join(contextParts, "\n\n---\n\n")
 	}
-	prompt := fmt.Sprintf("Question:\n%s\n\nKnowledge Base Context:\n%s\n\nAnswer using only supported facts from context when possible. If context is insufficient, say so briefly.", query, contextBlock)
+	prompt := fmt.Sprintf(`You are a helpful assistant for this business.
+Use only the context below to answer the question.
+If the answer is not in the context, reply exactly:
+"I don't have information about that. Please contact support."
+
+Context:
+%s
+
+User Question: %s`, contextBlock, query)
 	return c.openAIChat(prompt)
 }
 
@@ -482,7 +490,38 @@ func (c *Controller) resolvePineconeIndexInfoFromControlPlane(indexName string) 
 	return info, nil
 }
 
+type ragChunk struct {
+	URL        string
+	PageTitle  string
+	Text       string
+	ChunkIndex int
+	WidgetKey  string
+}
+
+func pineconeNamespace(userID string) string {
+	return "user_" + strings.ReplaceAll(strings.TrimSpace(userID), "-", "")
+}
+
+func (c *Controller) userWidgetKey(userID string) string {
+	var widgetKey string
+	if err := c.db.QueryRow(`SELECT widget_key FROM widget_keys WHERE user_id=$1`, userID).Scan(&widgetKey); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(widgetKey)
+}
+
 func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
+	chunks := []ragChunk{{
+		URL:        sourceURL,
+		PageTitle:  "",
+		Text:       content,
+		ChunkIndex: 0,
+		WidgetKey:  c.userWidgetKey(userID),
+	}}
+	return c.pineconeUpsertChunks(userID, chunks)
+}
+
+func (c *Controller) pineconeUpsertChunks(userID string, chunks []ragChunk) error {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil
 	}
@@ -493,24 +532,44 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	if indexInfo.Host == "" {
 		return errors.New("pinecone host could not be resolved; set PINECONE_HOST or verify PINECONE_INDEX_NAME")
 	}
-	emb, err := c.openAIEmbedding(content, indexInfo.Dimension)
-	if err != nil || len(emb) == 0 {
-		if err != nil {
-			c.logger.Warn("pinecone upsert embedding failed", "user_id", userID, "source_url", sourceURL, "error", err)
+
+	namespace := pineconeNamespace(userID)
+	vectors := make([]map[string]interface{}, 0, len(chunks))
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text == "" {
+			continue
 		}
-		return err
-	}
-	id := utils.RandomID("pc")
-	payload := map[string]interface{}{
-		"vectors": []map[string]interface{}{{
-			"id":     id,
+		emb, err := c.openAIEmbedding(text, indexInfo.Dimension)
+		if err != nil || len(emb) == 0 {
+			if err != nil {
+				c.logger.Warn("pinecone upsert embedding failed", "user_id", userID, "source_url", chunk.URL, "error", err)
+			}
+			continue
+		}
+
+		vectors = append(vectors, map[string]interface{}{
+			"id":     utils.RandomID("pc"),
 			"values": emb,
 			"metadata": map[string]interface{}{
-				"user_id": userID,
-				"url":     sourceURL,
-				"text":    content,
+				"user_id":     userID,
+				"url":         chunk.URL,
+				"pageTitle":   strings.TrimSpace(chunk.PageTitle),
+				"chunkIndex":  chunk.ChunkIndex,
+				"text":        text,
+				"widgetKey":   strings.TrimSpace(chunk.WidgetKey),
+				"namespaceId": namespace,
 			},
-		}},
+		})
+	}
+
+	if len(vectors) == 0 {
+		return nil
+	}
+
+	payload := map[string]interface{}{
+		"namespace": namespace,
+		"vectors":   vectors,
 	}
 	b, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, indexInfo.Host+"/vectors/upsert", bytes.NewReader(b))
@@ -525,15 +584,61 @@ func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
 	req = req.WithContext(ctx)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		c.logger.Warn("pinecone upsert request failed", "user_id", userID, "source_url", sourceURL, "error", err)
+		c.logger.Warn("pinecone upsert request failed", "user_id", userID, "namespace", namespace, "error", err)
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		err := fmt.Errorf("pinecone upsert status %d: %s", resp.StatusCode, string(body))
-		c.logger.Warn("pinecone upsert returned non-success status", "status_code", resp.StatusCode, "user_id", userID, "source_url", sourceURL)
+		c.logger.Warn("pinecone upsert returned non-success status", "status_code", resp.StatusCode, "user_id", userID, "namespace", namespace)
 		return err
+	}
+	return nil
+}
+
+func (c *Controller) pineconeDeleteNamespace(userID string) error {
+	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
+		return nil
+	}
+	indexInfo, err := c.pineconeIndexInfo()
+	if err != nil {
+		return err
+	}
+	if indexInfo.Host == "" {
+		return nil
+	}
+	namespace := pineconeNamespace(userID)
+	payload := map[string]interface{}{
+		"namespace": namespace,
+		"deleteAll": true,
+	}
+	b, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, indexInfo.Host+"/vectors/delete", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Api-Key", c.cfg.PineconeAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		trimmed := strings.TrimSpace(string(body))
+		if resp.StatusCode == http.StatusNotFound {
+			lower := strings.ToLower(trimmed)
+			if strings.Contains(lower, "namespace not found") || strings.Contains(lower, `"code":5`) {
+				return nil
+			}
+		}
+		return fmt.Errorf("pinecone namespace delete status %d: %s", resp.StatusCode, trimmed)
 	}
 	return nil
 }
@@ -557,15 +662,14 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 		return nil, err
 	}
 	if topK <= 0 {
-		topK = 3
+		topK = 5
 	}
+	namespace := pineconeNamespace(userID)
 	payload := map[string]interface{}{
+		"namespace":       namespace,
 		"vector":          emb,
 		"topK":            topK,
 		"includeMetadata": true,
-		"filter": map[string]interface{}{
-			"user_id": map[string]interface{}{"$eq": userID},
-		},
 	}
 	b, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, indexInfo.Host+"/query", bytes.NewReader(b))

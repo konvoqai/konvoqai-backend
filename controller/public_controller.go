@@ -79,22 +79,17 @@ func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 	if _, err := c.db.Exec(`INSERT INTO chat_conversations (id,user_id,status,last_message_preview,last_message_at) VALUES ($1,$2,'active',$3,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET last_message_preview=EXCLUDED.last_message_preview,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`, sessionID, ownerID, body.Message); err != nil {
 		c.logRequestWarn(r, "public webhook conversation upsert failed", err, "widget_key", body.WidgetKey, "session_id", sessionID)
 	}
-	matches, matchErr := c.pineconeQuery(ownerID, body.Message, 3)
+	matches, matchErr := c.pineconeQuery(ownerID, body.Message, 5)
+	relevantMatches := relevantRAGMatches(matches, 0.65)
 	if matchErr != nil {
 		c.logRequestWarn(r, "public webhook context lookup failed", matchErr, "widget_key", body.WidgetKey, "session_id", sessionID)
 	}
-	answer := "I'm sorry, I couldn't process your request right now. Please try again."
-	if len(matches) > 0 {
-		if ai, aiErr := c.openAIAnswerWithContext(body.Message, matches); aiErr == nil && strings.TrimSpace(ai) != "" {
+	answer := "I don't have information about that. Please contact support."
+	if len(relevantMatches) > 0 {
+		if ai, aiErr := c.openAIAnswerWithContext(body.Message, relevantMatches); aiErr == nil && strings.TrimSpace(ai) != "" {
 			answer = ai
 		} else if aiErr != nil {
 			c.logRequestWarn(r, "public webhook response generation with context failed", aiErr, "widget_key", body.WidgetKey, "session_id", sessionID)
-		}
-	} else {
-		if ai, aiErr := c.openAIChat(body.Message); aiErr == nil && strings.TrimSpace(ai) != "" {
-			answer = ai
-		} else if aiErr != nil {
-			c.logRequestWarn(r, "public webhook response generation failed", aiErr, "widget_key", body.WidgetKey, "session_id", sessionID)
 		}
 	}
 	if _, err := c.db.Exec(`INSERT INTO chat_messages (conversation_id,user_id,role,content,metadata) VALUES ($1,$2,'user',$3,'{}'::jsonb),($1,$2,'assistant',$4,'{}'::jsonb)`, sessionID, ownerID, body.Message, answer); err != nil {
@@ -109,7 +104,78 @@ func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 	}); marshalErr == nil {
 		_ = c.redis.RPush(r.Context(), "widget:analytics:buffer", string(b)).Err()
 	}
+
+	if r.URL.Query().Get("stream") == "1" {
+		streamWidgetResponse(w, sessionID, answer)
+		return
+	}
 	utils.JSONOK(w, map[string]interface{}{"success": true, "sessionId": sessionID, "response": answer})
+}
+
+func streamWidgetResponse(w http.ResponseWriter, sessionID, answer string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		utils.JSONOK(w, map[string]interface{}{"success": true, "sessionId": sessionID, "response": answer})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	for _, chunk := range splitAnswerChunks(answer, 4) {
+		writeSSEEvent(w, map[string]interface{}{
+			"type":  "token",
+			"token": chunk,
+		})
+		flusher.Flush()
+	}
+	writeSSEEvent(w, map[string]interface{}{
+		"type":      "done",
+		"sessionId": sessionID,
+	})
+	flusher.Flush()
+}
+
+func splitAnswerChunks(answer string, wordsPerChunk int) []string {
+	text := strings.TrimSpace(answer)
+	if text == "" {
+		return []string{""}
+	}
+	if wordsPerChunk <= 0 {
+		wordsPerChunk = 4
+	}
+	words := strings.Fields(text)
+	if len(words) <= wordsPerChunk {
+		return []string{text}
+	}
+	chunks := make([]string, 0, len(words)/wordsPerChunk+1)
+	for start := 0; start < len(words); start += wordsPerChunk {
+		end := start + wordsPerChunk
+		if end > len(words) {
+			end = len(words)
+		}
+		chunk := strings.Join(words[start:end], " ")
+		if end < len(words) {
+			chunk += " "
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+func writeSSEEvent(w http.ResponseWriter, payload map[string]interface{}) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", string(b))
+}
+
+func (c *Controller) WidgetPreviewPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, "public/widget/preview.html")
 }
 
 func (c *Controller) EmbedJS(w http.ResponseWriter, _ *http.Request) {
@@ -118,14 +184,102 @@ func (c *Controller) EmbedJS(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (c *Controller) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimPrefix(r.URL.Path, "/api/v1/embed/")
-	if !strings.HasSuffix(key, ".js") || key == ".js" {
+	key := strings.TrimSpace(chi.URLParam(r, "widgetKey"))
+	if key == "" || !strings.HasPrefix(key, "wk_") {
 		utils.JSONErr(w, http.StatusNotFound, "embed script not found")
 		return
 	}
-	key = strings.TrimSuffix(key, ".js")
+
+	var configRaw []byte
+	var isActive bool
+	if err := c.db.QueryRow(`SELECT widget_config,is_active FROM widget_keys WHERE widget_key=$1`, key).Scan(&configRaw, &isActive); err != nil || !isActive {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			c.logRequestWarn(r, "embed script widget lookup failed", err, "widget_key", key)
+		}
+		utils.JSONErr(w, http.StatusNotFound, "widget not found")
+		return
+	}
+
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(configRaw, &cfg); err != nil {
+		cfg = map[string]interface{}{}
+	}
+	if !isWidgetConfigured(cfg) {
+		utils.JSONErr(w, http.StatusForbidden, "widget configuration is incomplete")
+		return
+	}
+
+	baseURL := publicBaseURL(r)
+	baseJSON, _ := json.Marshal(baseURL)
+	keyJSON, _ := json.Marshal(key)
+	cfgJSON, _ := json.Marshal(cfg)
+
 	w.Header().Set("Content-Type", "application/javascript")
-	_, _ = w.Write([]byte(fmt.Sprintf("console.log('Witzo widget loaded: %s');", key)))
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write([]byte(fmt.Sprintf(`(function(){
+  if (window.__KONVOQ_EMBED_LOADED__ && window.__KONVOQ_EMBED_LOADED__[%s]) return;
+  window.__KONVOQ_EMBED_LOADED__ = window.__KONVOQ_EMBED_LOADED__ || {};
+  window.__KONVOQ_EMBED_LOADED__[%s] = true;
+  var baseURL = %s;
+  var widgetKey = %s;
+  var config = %s || {};
+  var script = document.createElement('script');
+  script.src = baseURL + '/widget/konvoq-chat.js';
+  script.async = true;
+  script.onload = function() {
+    if (document.querySelector('konvoq-chat[widget-key="' + widgetKey + '"]')) return;
+    var el = document.createElement('konvoq-chat');
+    el.setAttribute('api-url', baseURL + '/api/v1/webhook');
+    el.setAttribute('api-base-url', baseURL);
+    el.setAttribute('widget-key', widgetKey);
+    var resolved = {
+      'primary-color': config.primaryColor || config.sendColor || config.botColor,
+      'background-color': config.backgroundColor || config.bannerColor,
+      'text-color': config.textColor || config.bannerTextColor,
+      'bot-name': config.botName || config.bannerText,
+      'welcome-message': config.welcomeMessage || config.bannerTextParagraph || config.primaryText,
+      'logo-url': config.logoUrl || config.logoIcon,
+      'position': config.position,
+      'border-radius': config.borderRadius,
+      'font-size': config.fontSize,
+      'primary-text': config.primaryText || config.welcomeMessage || config.bannerTextParagraph,
+      'bot-color': config.botColor || config.primaryColor,
+      'send-color': config.sendColor || config.primaryColor,
+      'floating-btn-color': config.floatingBtnColor || config.primaryColor,
+      'floating-btn': config.floatingBtn || config.primaryColor,
+      'auto-open': config.autoOpen,
+      'banner-text': config.bannerText || config.botName,
+      'banner-text-color': config.bannerTextColor || config.textColor,
+      'banner-color': config.bannerColor || config.backgroundColor,
+      'user-chat-color': config.userChatColor,
+      'close-button-color': config.closeButtonColor,
+      'logo-icon': config.logoIcon || config.logoUrl,
+      'banner-text-paragraph': config.bannerTextParagraph || config.welcomeMessage,
+      'banner-text-paragraph-color': config.bannerTextParagraphColor,
+      'plan-type': config.planType,
+      'default-language': config.defaultLanguage
+    };
+    Object.keys(resolved).forEach(function(attr){
+      var value = resolved[attr];
+      if (value === undefined || value === null || value === '') return;
+      el.setAttribute(attr, String(value));
+    });
+    document.body.appendChild(el);
+  };
+  document.head.appendChild(script);
+})();`, keyJSON, keyJSON, baseJSON, keyJSON, cfgJSON)))
+}
+
+func publicBaseURL(r *http.Request) string {
+	scheme := "http"
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || r.TLS != nil {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = "localhost:8080"
+	}
+	return scheme + "://" + host
 }
 
 func (c *Controller) PublicContact(w http.ResponseWriter, r *http.Request) {

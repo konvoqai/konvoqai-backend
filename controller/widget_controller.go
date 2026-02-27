@@ -2,9 +2,12 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"konvoq-backend/utils"
@@ -24,12 +27,13 @@ func (c *Controller) CreateWidget(w http.ResponseWriter, r *http.Request, claims
 		cfg[k] = v
 	}
 	cfgJSON, _ := json.Marshal(cfg)
-	widgetKey := utils.RandomID("wk")
+	widgetKey := generateWidgetKey()
 	var id int64
+	var persistedWidgetKey string
 	err := c.db.QueryRow(`INSERT INTO widget_keys (user_id,widget_key,widget_name,widget_config,is_active) VALUES ($1,$2,$3,$4::jsonb,TRUE)
-		ON CONFLICT (user_id) DO UPDATE SET widget_key=EXCLUDED.widget_key,widget_name=EXCLUDED.widget_name,widget_config=EXCLUDED.widget_config,is_active=TRUE,updated_at=CURRENT_TIMESTAMP
-		RETURNING id`,
-		claims.UserID, widgetKey, coalesce(body.Name, "My Chat Widget"), string(cfgJSON)).Scan(&id)
+		ON CONFLICT (user_id) DO UPDATE SET widget_name=EXCLUDED.widget_name,widget_config=EXCLUDED.widget_config,is_active=TRUE,updated_at=CURRENT_TIMESTAMP
+		RETURNING id,widget_key`,
+		claims.UserID, widgetKey, coalesce(body.Name, "My Chat Widget"), string(cfgJSON)).Scan(&id, &persistedWidgetKey)
 	if err != nil {
 		c.logRequestError(r, "create widget upsert failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
@@ -37,10 +41,10 @@ func (c *Controller) CreateWidget(w http.ResponseWriter, r *http.Request, claims
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	_ = c.redis.Del(ctx, "widget:"+widgetKey).Err()
+	_ = c.redis.Del(ctx, "widget:"+persistedWidgetKey).Err()
 	utils.JSONOK(w, map[string]interface{}{"success": true, "widget": map[string]interface{}{
-		"id": id, "userId": claims.UserID, "widgetKey": widgetKey,
-		"name": coalesce(body.Name, "My Chat Widget"), "settings": cfg,
+		"id": id, "userId": claims.UserID, "widgetKey": persistedWidgetKey,
+		"name": coalesce(body.Name, "My Chat Widget"), "settings": cfg, "isConfigured": isWidgetConfigured(cfg),
 	}})
 }
 
@@ -61,7 +65,7 @@ func (c *Controller) GetWidget(w http.ResponseWriter, r *http.Request, claims To
 	_ = json.Unmarshal(cfgRaw, &cfg)
 	utils.JSONOK(w, map[string]interface{}{"success": true, "widget": map[string]interface{}{
 		"id": id, "userId": claims.UserID, "widgetKey": key, "name": name,
-		"isActive": active, "settings": cfg, "createdAt": created, "updatedAt": updated,
+		"isActive": active, "isConfigured": isWidgetConfigured(cfg), "settings": cfg, "createdAt": created, "updatedAt": updated,
 	}})
 }
 
@@ -72,19 +76,29 @@ func (c *Controller) UpdateWidget(w http.ResponseWriter, r *http.Request, claims
 		return
 	}
 	name, _ := body["name"].(string)
-	cfgJSON, _ := json.Marshal(body)
-	_, err := c.db.Exec(`UPDATE widget_keys SET widget_name=COALESCE($2,widget_name),widget_config=COALESCE($3::jsonb,widget_config),updated_at=CURRENT_TIMESTAMP WHERE user_id=$1`,
-		claims.UserID, utils.Nullable(name), string(cfgJSON))
+	configPayload := body
+	if settings, ok := body["settings"].(map[string]interface{}); ok {
+		configPayload = settings
+	}
+	cfgJSON, _ := json.Marshal(configPayload)
+	var widgetKey string
+	err := c.db.QueryRow(`UPDATE widget_keys SET widget_name=COALESCE($2,widget_name),widget_config=COALESCE($3::jsonb,widget_config),updated_at=CURRENT_TIMESTAMP WHERE user_id=$1 RETURNING widget_key`,
+		claims.UserID, utils.Nullable(name), string(cfgJSON)).Scan(&widgetKey)
 	if err != nil {
 		c.logRequestError(r, "update widget failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	_ = c.redis.Del(ctx, "widget:"+widgetKey).Err()
 	c.GetWidget(w, r, claims, UserRecord{})
 }
 
 func (c *Controller) RegenerateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
-	newKey := utils.RandomID("wk")
+	newKey := generateWidgetKey()
+	var oldKey string
+	_ = c.db.QueryRow(`SELECT widget_key FROM widget_keys WHERE user_id=$1`, claims.UserID).Scan(&oldKey)
 	_, err := c.db.Exec(`UPDATE widget_keys SET widget_key=$2,updated_at=CURRENT_TIMESTAMP WHERE user_id=$1`, claims.UserID, newKey)
 	if err != nil {
 		c.logRequestError(r, "regenerate widget key failed", err, "user_id", claims.UserID)
@@ -93,6 +107,9 @@ func (c *Controller) RegenerateWidget(w http.ResponseWriter, r *http.Request, cl
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
+	if strings.TrimSpace(oldKey) != "" {
+		_ = c.redis.Del(ctx, "widget:"+oldKey).Err()
+	}
 	_ = c.redis.Del(ctx, "widget:"+newKey).Err()
 	c.GetWidget(w, r, claims, UserRecord{})
 }
@@ -135,4 +152,41 @@ func (c *Controller) WidgetAnalytics(w http.ResponseWriter, r *http.Request, cla
 		items = append(items, map[string]interface{}{"eventType": et, "eventData": m, "createdAt": created})
 	}
 	utils.JSONOK(w, map[string]interface{}{"success": true, "analytics": items})
+}
+
+func isWidgetConfigured(cfg map[string]interface{}) bool {
+	if len(cfg) == 0 {
+		return false
+	}
+	required := []string{"primaryColor", "backgroundColor", "textColor", "botName", "welcomeMessage"}
+	for _, key := range required {
+		val, ok := cfg[key]
+		if !ok {
+			return false
+		}
+		if strings.TrimSpace(asString(val)) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func asString(v interface{}) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case []byte:
+		return string(value)
+	default:
+		b, _ := json.Marshal(value)
+		return string(b)
+	}
+}
+
+func generateWidgetKey() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return utils.RandomID("wk")
+	}
+	return "wk_" + hex.EncodeToString(buf)
 }

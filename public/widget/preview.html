@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Konvoq Widget Preview</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+      }
+    </style>
+  </head>
+  <body>
+    <konvoq-chat
+      id="konvoqWidgetPreview"
+      api-url="/api/v1/webhook"
+      widget-key="preview-widget"
+      banner-text="Konvoq AI"
+      banner-text-paragraph="Welcome to your live widget preview."
+      auto-open="true"
+    ></konvoq-chat>
+    <script src="/widget/konvoq-chat.js"></script>
+  </body>
+</html>
+

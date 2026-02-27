@@ -46,21 +46,18 @@ func (c *Controller) Chat(w http.ResponseWriter, r *http.Request, claims TokenCl
 		utils.JSONErr(w, http.StatusInternalServerError, "failed to create conversation")
 		return
 	}
-	answer := "I couldn't generate a response right now. Please try again."
-	if ragMatches, ragErr := c.pineconeQuery(claims.UserID, body.Message, 3); ragErr == nil && len(ragMatches) > 0 {
-		if ai, aiErr := c.openAIAnswerWithContext(body.Message, ragMatches); aiErr == nil && strings.TrimSpace(ai) != "" {
-			answer = ai
-		} else if aiErr != nil {
-			c.logRequestWarn(r, "chat response generation with context failed", aiErr, "user_id", claims.UserID, "session_id", convID)
-		}
+	answer := "I don't have information about that. Please contact support."
+	ragMatches, ragErr := c.pineconeQuery(claims.UserID, body.Message, 5)
+	if ragErr != nil {
+		c.logRequestWarn(r, "chat context lookup failed", ragErr, "user_id", claims.UserID, "session_id", convID)
 	} else {
-		if ragErr != nil {
-			c.logRequestWarn(r, "chat context lookup failed", ragErr, "user_id", claims.UserID, "session_id", convID)
-		}
-		if ai, aiErr := c.openAIChat(body.Message); aiErr == nil && strings.TrimSpace(ai) != "" {
-			answer = ai
-		} else if aiErr != nil {
-			c.logRequestWarn(r, "chat response generation failed", aiErr, "user_id", claims.UserID, "session_id", convID)
+		relevantMatches := relevantRAGMatches(ragMatches, 0.65)
+		if len(relevantMatches) > 0 {
+			if ai, aiErr := c.openAIAnswerWithContext(body.Message, relevantMatches); aiErr == nil && strings.TrimSpace(ai) != "" {
+				answer = ai
+			} else if aiErr != nil {
+				c.logRequestWarn(r, "chat response generation with context failed", aiErr, "user_id", claims.UserID, "session_id", convID)
+			}
 		}
 	}
 	if _, err := c.db.Exec(`INSERT INTO chat_messages (conversation_id,user_id,role,content,metadata) VALUES ($1,$2,'user',$3,'{}'::jsonb),($1,$2,'assistant',$4,'{}'::jsonb)`,

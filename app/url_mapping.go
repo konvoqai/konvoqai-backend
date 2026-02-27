@@ -1,6 +1,10 @@
 package app
 
-import "github.com/go-chi/chi/v5"
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
 
 func (a *App) registerRoutes(r chi.Router) {
 	// Health / readiness
@@ -20,6 +24,10 @@ func (a *App) registerRoutes(r chi.Router) {
 	r.Route("/api/feedback", a.mapFeedbackRoutes)
 	r.Route("/api/admin", a.mapAdminRoutes)
 	r.Route("/api/v1", a.mapPublicV1Routes)
+
+	// Shared widget bundle for embed + dashboard live preview.
+	r.Get("/widget/preview", a.ctrl.WidgetPreviewPage)
+	r.Handle("/widget/*", http.StripPrefix("/widget/", http.FileServer(http.Dir("public/widget"))))
 }
 
 // Auth — public (no token required) + session management (protected)
@@ -45,6 +53,7 @@ func (a *App) mapMeRoutes(r chi.Router) {
 	r.Get("/validate", a.auth(a.ctrl.ValidateSession))
 	r.Get("/profile", a.auth(a.ctrl.ProfileStatus))
 	r.Put("/profile", a.auth(a.ctrl.UpdateProfile))
+	r.Post("/onboarding/complete", a.auth(a.ctrl.CompleteOnboarding))
 	r.Get("/usage", a.auth(a.ctrl.GetUsage))
 	r.Get("/analytics", a.auth(a.ctrl.Overview))
 }
@@ -73,8 +82,10 @@ func (a *App) mapChatRoutes(r chi.Router) {
 
 // Documents
 func (a *App) mapDocumentRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListDocuments))
 	r.Post("/", a.auth(a.ctrl.UploadDocument))
 	r.Post("/batch", a.auth(a.ctrl.UploadMultipleDocuments))
+	r.Delete("/{id}", a.auth(a.ctrl.DeleteDocument))
 }
 
 // Widget
@@ -122,7 +133,7 @@ func (a *App) mapPublicV1Routes(r chi.Router) {
 	r.Get("/widget/config/{widgetKey}", a.ctrl.PublicWidgetConfig)
 	r.Post("/webhook", a.ctrl.PublicWebhook)
 	r.Get("/widget/embed.js", a.ctrl.EmbedJS)
-	r.Get("/embed/", a.ctrl.EmbedForWidget)
+	r.Get("/embed/{widgetKey}.js", a.ctrl.EmbedForWidget)
 	r.Post("/widget/contact", a.ctrl.PublicContact)
 	r.Post("/widget/rating", a.ctrl.PublicRating)
 }

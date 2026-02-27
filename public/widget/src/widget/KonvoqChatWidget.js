@@ -51,6 +51,7 @@ export class KonvoqChatWidget extends HTMLElement {
 		this.date = new Date();
 		this._contactEventsBound = false;
 		this._initialized = false;
+		this._messageHandler = (event) => this.handlePreviewMessage(event);
 		this.elements = {};
 
 		this.supportedLanguages = [...SUPPORTED_LANGUAGES];
@@ -58,6 +59,7 @@ export class KonvoqChatWidget extends HTMLElement {
 	}
 
 	connectedCallback() {
+		window.addEventListener("message", this._messageHandler);
 		if (this._initialized) {
 			return;
 		}
@@ -65,10 +67,15 @@ export class KonvoqChatWidget extends HTMLElement {
 		void this.initialize();
 	}
 
+	disconnectedCallback() {
+		window.removeEventListener("message", this._messageHandler);
+	}
+
 	async initialize() {
 		this.initializeSession();
 		this.readAttributes();
 		this.initializeLanguagePreference();
+		await this.loadRemoteConfig();
 
 		await this.render();
 		this.bindEvents();
@@ -126,6 +133,27 @@ export class KonvoqChatWidget extends HTMLElement {
 		const hasConfiguredAttribute = this.getAttribute("default-language") !== null;
 		this.selectedLanguage = loadLanguagePreference(this.widgetKey, configuredLanguage, hasConfiguredAttribute);
 		this.config.defaultLanguage = this.selectedLanguage;
+	}
+
+	async loadRemoteConfig() {
+		if (!this.widgetKey || !this.apiBaseUrl) {
+			return;
+		}
+		try {
+			const response = await fetch(`${this.apiBaseUrl}/api/v1/widget/config/${encodeURIComponent(this.widgetKey)}`);
+			if (!response.ok) {
+				return;
+			}
+			const payload = await response.json();
+			const remoteSettings = payload?.widget?.settings || {};
+			if (!remoteSettings || typeof remoteSettings !== "object") {
+				return;
+			}
+			const mapped = this.normalizePreviewConfig(remoteSettings);
+			this.config = { ...this.config, ...remoteSettings, ...mapped };
+		} catch (_error) {
+			// Keep local/default config when remote config is unavailable.
+		}
 	}
 
 	async render() {
@@ -510,5 +538,39 @@ export class KonvoqChatWidget extends HTMLElement {
 		appendMessage(this.elements.messagesContainer, sanitizeHTML(this.config.primaryText), "bot", (value) =>
 			this.renderMessageContent(value, "bot"),
 		);
+	}
+
+	handlePreviewMessage(event) {
+		const payload = event?.data;
+		if (!payload || payload.type !== "konvoq:widget-config" || typeof payload.config !== "object") {
+			return;
+		}
+		const mapped = this.normalizePreviewConfig(payload.config);
+		this.applyRuntimeConfig(mapped);
+	}
+
+	normalizePreviewConfig(config) {
+		return {
+			primaryColor: config.primaryColor,
+			backgroundColor: config.backgroundColor,
+			textColor: config.textColor,
+			botName: config.botName,
+			welcomeMessage: config.welcomeMessage,
+			logoIcon: config.logoUrl || config.logoIcon,
+			position: config.position,
+			borderRadius: config.borderRadius,
+			fontSize: config.fontSize,
+			primaryText: config.welcomeMessage,
+		};
+	}
+
+	applyRuntimeConfig(nextConfig) {
+		this.config = { ...this.config, ...nextConfig };
+		if (!this.elements || !this.elements.widget) {
+			return;
+		}
+		applyTheme(this, this.config);
+		applyHeaderContent(this.elements, this.config);
+		renderHeaderIcon(this.elements.chatIcon, this.config.logoIcon);
 	}
 }
