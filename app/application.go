@@ -4,10 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/httprate"
 
 	"konvoq-backend/config"
 	"konvoq-backend/controller"
@@ -82,6 +86,8 @@ func (a *App) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.WithRequestLogger(a.logger))
 	r.Use(middleware.WithRecovery(a.logger))
+	// Global rate limit: 100 requests per minute per IP
+	r.Use(httprate.LimitByIP(100, time.Minute))
 	r.Use(func(next http.Handler) http.Handler {
 		return middleware.WithCommonHeaders(next, a.cfg.CORSAllowedOrigins)
 	})
@@ -98,14 +104,53 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	defer app.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	app.ctrl.StartBackgroundWorkers(ctx)
+
 	addr := ":" + cfg.Port
-	logger.Info("konvoq api listening", "address", addr)
-	if err := http.ListenAndServe(addr, app.Handler()); err != nil {
-		logger.Error("http server stopped", "error", err)
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      app.Handler(),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// Start server in background
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info("konvoq api listening", "address", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	// Wait for OS shutdown signal or server error
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErr:
+		logger.Error("http server error", "error", err)
+		cancel()
+		return err
+	case sig := <-quit:
+		logger.Info("shutdown signal received", "signal", sig.String())
+	}
+
+	// Cancel background workers
+	cancel()
+
+	// Give in-flight requests up to 30 s to complete
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("server shutdown error", "error", err)
 		return err
 	}
+	logger.Info("server stopped gracefully")
 	return nil
 }

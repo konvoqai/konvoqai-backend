@@ -102,7 +102,11 @@ func (c *Controller) Scrape(w http.ResponseWriter, r *http.Request, claims Token
 		return
 	}
 
-	go c.runScrapeJob(claims.UserID, sourceURL, jobID, remainingPages)
+	go func() {
+		c.scrapeSem <- struct{}{}
+		defer func() { <-c.scrapeSem }()
+		c.runScrapeJob(claims.UserID, sourceURL, jobID, remainingPages)
+	}()
 
 	utils.JSONOK(w, map[string]interface{}{
 		"success":  true,

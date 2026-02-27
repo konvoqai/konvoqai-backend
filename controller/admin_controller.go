@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"konvoq-backend/utils"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func (c *Controller) AdminLogin(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +22,7 @@ func (c *Controller) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
-	if body.Email != c.cfg.AdminEmail || body.Password != c.cfg.AdminPassword {
+	if !adminPasswordOK(c.cfg.AdminPassword, body.Password) || subtle.ConstantTimeCompare([]byte(body.Email), []byte(c.cfg.AdminEmail)) != 1 {
 		utils.JSONErr(w, http.StatusUnauthorized, "invalid admin credentials")
 		return
 	}
@@ -128,6 +130,20 @@ func (c *Controller) AdminForceLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	utils.JSONOK(w, map[string]interface{}{"success": true})
+}
+
+// adminPasswordOK compares the stored admin password with the provided one.
+// If the stored value is a bcrypt hash (starts with $2a$/$2b$/$2y$), bcrypt
+// comparison is used. Otherwise, a constant-time string comparison is used so
+// that plaintext configs are still accepted while preventing timing attacks.
+// New deployments should store a bcrypt hash:
+//
+//	htpasswd -bnBC 10 "" mypassword | tr -d ':\n'
+func adminPasswordOK(stored, provided string) bool {
+	if strings.HasPrefix(stored, "$2a$") || strings.HasPrefix(stored, "$2b$") || strings.HasPrefix(stored, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(provided)) == nil
+	}
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1
 }
 
 func (c *Controller) AdminSetPlan(w http.ResponseWriter, r *http.Request) {

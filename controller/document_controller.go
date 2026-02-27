@@ -87,6 +87,8 @@ func (c *Controller) UploadDocument(w http.ResponseWriter, r *http.Request, clai
 			if data, readErr := io.ReadAll(io.LimitReader(f, 2<<20)); readErr == nil {
 				docID, docName, docMime := id, name, mime
 				go func() {
+					c.docSem <- struct{}{}        // acquire semaphore slot
+					defer func() { <-c.docSem }() // release on done
 					if text := extractDocumentText(docName, docMime, data); text != "" {
 						if err := c.pineconeUpsert(claims.UserID, "doc:"+docID, text); err != nil {
 							c.logger.Warn("document index upsert failed", "user_id", claims.UserID, "document_id", docID, "error", err)
@@ -141,6 +143,8 @@ func (c *Controller) UploadMultipleDocuments(w http.ResponseWriter, r *http.Requ
 				if data, readErr := io.ReadAll(io.LimitReader(f, 2<<20)); readErr == nil {
 					docID, docName, docMime := id, name, mime
 					go func() {
+						c.docSem <- struct{}{}        // acquire semaphore slot
+						defer func() { <-c.docSem }() // release on done
 						if text := extractDocumentText(docName, docMime, data); text != "" {
 							if err := c.pineconeUpsert(claims.UserID, "doc:"+docID, text); err != nil {
 								c.logger.Warn("document batch index upsert failed", "user_id", claims.UserID, "document_id", docID, "error", err)

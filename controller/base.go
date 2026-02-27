@@ -20,11 +20,13 @@ import (
 
 // Controller holds all dependencies for request handlers.
 type Controller struct {
-	cfg    config.Config
-	db     *sql.DB
-	redis  *redis.Client
-	logger *slog.Logger
-	Auth   *auth.Handler
+	cfg       config.Config
+	db        *sql.DB
+	redis     *redis.Client
+	logger    *slog.Logger
+	Auth      *auth.Handler
+	docSem    chan struct{} // limits concurrent document-processing goroutines
+	scrapeSem chan struct{} // limits concurrent scrape-job goroutines
 }
 
 func New(cfg config.Config, db *sql.DB, redisClient *redis.Client, logger *slog.Logger) *Controller {
@@ -32,10 +34,12 @@ func New(cfg config.Config, db *sql.DB, redisClient *redis.Client, logger *slog.
 		logger = slog.Default()
 	}
 	c := &Controller{
-		cfg:    cfg,
-		db:     db,
-		redis:  redisClient,
-		logger: logger.With("component", "controller"),
+		cfg:       cfg,
+		db:        db,
+		redis:     redisClient,
+		logger:    logger.With("component", "controller"),
+		docSem:    make(chan struct{}, 10),
+		scrapeSem: make(chan struct{}, 5),
 	}
 	c.Auth = auth.New()
 	return c

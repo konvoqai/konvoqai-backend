@@ -76,9 +76,19 @@ func (c *Controller) sendEmail(to, subject, htmlBody, textBody string) {
 			"Content-Type: text/html; charset=UTF-8\r\n\r\n" + htmlBody + "\r\n\r\n" +
 			"--" + boundary + "--"
 		addr := fmt.Sprintf("%s:%d", c.cfg.EmailHost, c.cfg.EmailPort)
-		auth := smtp.PlainAuth("", c.cfg.EmailUser, c.cfg.EmailPassword, c.cfg.EmailHost)
-		if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(msg)); err != nil {
-			c.logger.Error("email send failed", "to", to, "subject", subject, "error", err)
+		smtpAuth := smtp.PlainAuth("", c.cfg.EmailUser, c.cfg.EmailPassword, c.cfg.EmailHost)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- smtp.SendMail(addr, smtpAuth, from, []string{to}, []byte(msg))
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				c.logger.Error("email send failed", "to", to, "subject", subject, "error", err)
+			}
+		case <-time.After(30 * time.Second):
+			c.logger.Warn("email send timed out", "to", to, "subject", subject)
 		}
 	}()
 }
