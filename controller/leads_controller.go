@@ -118,6 +118,10 @@ func (c *Controller) UpsertLeadWebhook(w http.ResponseWriter, r *http.Request, c
 		utils.JSONErr(w, http.StatusBadRequest, "webhookUrl is required")
 		return
 	}
+	if _, err := c.validateWebhookTarget(body.WebhookURL); err != nil {
+		utils.JSONErr(w, http.StatusBadRequest, "webhookUrl is not allowed")
+		return
+	}
 	active := true
 	if body.IsActive != nil {
 		active = *body.IsActive

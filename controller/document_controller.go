@@ -165,6 +165,14 @@ func (c *Controller) DeleteDocument(w http.ResponseWriter, r *http.Request, clai
 		utils.JSONErr(w, http.StatusBadRequest, "document id is required")
 		return
 	}
+	if err := c.pineconeDeleteBySource(claims.UserID, "document", id); err != nil {
+		c.logRequestError(r, "delete document vectors failed", err, "user_id", claims.UserID, "document_id", id)
+		utils.JSONErr(w, http.StatusBadGateway, "failed to remove document vectors")
+		return
+	}
+	if err := c.pineconeDeleteByURL(claims.UserID, "doc:"+id); err != nil {
+		c.logRequestWarn(r, "delete document legacy vector cleanup failed", err, "user_id", claims.UserID, "document_id", id)
+	}
 
 	res, err := c.db.Exec(`DELETE FROM documents WHERE id=$1 AND user_id=$2`, id, claims.UserID)
 	if err != nil {

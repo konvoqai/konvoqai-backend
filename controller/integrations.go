@@ -506,6 +506,8 @@ type ragChunk struct {
 	Text       string
 	ChunkIndex int
 	WidgetKey  string
+	SourceType string
+	SourceKey  string
 }
 
 func pineconeNamespace(userID string) string {
@@ -521,12 +523,20 @@ func (c *Controller) userWidgetKey(userID string) string {
 }
 
 func (c *Controller) pineconeUpsert(userID, sourceURL, content string) error {
+	sourceType := "website"
+	sourceKey := strings.TrimSpace(sourceURL)
+	if strings.HasPrefix(sourceKey, "doc:") {
+		sourceType = "document"
+		sourceKey = strings.TrimSpace(strings.TrimPrefix(sourceKey, "doc:"))
+	}
 	chunks := []ragChunk{{
 		URL:        sourceURL,
 		PageTitle:  "",
 		Text:       content,
 		ChunkIndex: 0,
 		WidgetKey:  c.userWidgetKey(userID),
+		SourceType: sourceType,
+		SourceKey:  sourceKey,
 	}}
 	return c.pineconeUpsertChunks(userID, chunks)
 }
@@ -550,6 +560,15 @@ func (c *Controller) pineconeUpsertChunks(userID string, chunks []ragChunk) erro
 		if text == "" {
 			continue
 		}
+		sourceType := normalizeRAGSourceType(chunk.SourceType)
+		sourceKey := strings.TrimSpace(chunk.SourceKey)
+		if sourceKey == "" {
+			if sourceType == "document" && strings.HasPrefix(strings.TrimSpace(chunk.URL), "doc:") {
+				sourceKey = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk.URL), "doc:"))
+			} else {
+				sourceKey = strings.TrimSpace(chunk.URL)
+			}
+		}
 		emb, err := c.openAIEmbedding(text, indexInfo.Dimension)
 		if err != nil || len(emb) == 0 {
 			if err != nil {
@@ -559,7 +578,7 @@ func (c *Controller) pineconeUpsertChunks(userID string, chunks []ragChunk) erro
 		}
 
 		vectors = append(vectors, map[string]interface{}{
-			"id":     utils.RandomID("pc"),
+			"id":     stablePineconeVectorID(namespace, sourceType, sourceKey, chunk.URL, chunk.ChunkIndex),
 			"values": emb,
 			"metadata": map[string]interface{}{
 				"user_id":     userID,
@@ -568,6 +587,8 @@ func (c *Controller) pineconeUpsertChunks(userID string, chunks []ragChunk) erro
 				"chunkIndex":  chunk.ChunkIndex,
 				"text":        text,
 				"widgetKey":   strings.TrimSpace(chunk.WidgetKey),
+				"sourceType":  sourceType,
+				"sourceKey":   sourceKey,
 				"namespaceId": namespace,
 			},
 		})
@@ -607,7 +628,31 @@ func (c *Controller) pineconeUpsertChunks(userID string, chunks []ragChunk) erro
 	return nil
 }
 
+func normalizeRAGSourceType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "document":
+		return "document"
+	default:
+		return "website"
+	}
+}
+
+func stablePineconeVectorID(namespace, sourceType, sourceKey, sourceURL string, chunkIndex int) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		strings.TrimSpace(namespace),
+		normalizeRAGSourceType(sourceType),
+		strings.TrimSpace(sourceKey),
+		strings.TrimSpace(sourceURL),
+		fmt.Sprintf("%d", chunkIndex),
+	}, "|")))
+	return "pc_" + hex.EncodeToString(sum[:16])
+}
+
 func (c *Controller) pineconeDeleteNamespace(userID string) error {
+	return c.pineconeDeleteAll(userID)
+}
+
+func (c *Controller) pineconeDeleteAll(userID string) error {
 	if strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
 		return nil
 	}
@@ -619,12 +664,58 @@ func (c *Controller) pineconeDeleteNamespace(userID string) error {
 		return nil
 	}
 	namespace := pineconeNamespace(userID)
-	payload := map[string]interface{}{
+	return c.pineconeDelete(indexInfo.Host, map[string]interface{}{
 		"namespace": namespace,
 		"deleteAll": true,
+	})
+}
+
+func (c *Controller) pineconeDeleteBySource(userID, sourceType, sourceKey string) error {
+	if strings.TrimSpace(sourceKey) == "" || strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
+		return nil
 	}
+	indexInfo, err := c.pineconeIndexInfo()
+	if err != nil {
+		return err
+	}
+	if indexInfo.Host == "" {
+		return nil
+	}
+	namespace := pineconeNamespace(userID)
+	filter := map[string]interface{}{
+		"sourceType": map[string]interface{}{"$eq": normalizeRAGSourceType(sourceType)},
+		"sourceKey":  map[string]interface{}{"$eq": strings.TrimSpace(sourceKey)},
+	}
+	return c.pineconeDelete(indexInfo.Host, map[string]interface{}{
+		"namespace": namespace,
+		"filter":    filter,
+	})
+}
+
+func (c *Controller) pineconeDeleteByURL(userID, sourceURL string) error {
+	if strings.TrimSpace(sourceURL) == "" || strings.TrimSpace(c.cfg.PineconeAPIKey) == "" {
+		return nil
+	}
+	indexInfo, err := c.pineconeIndexInfo()
+	if err != nil {
+		return err
+	}
+	if indexInfo.Host == "" {
+		return nil
+	}
+	namespace := pineconeNamespace(userID)
+	filter := map[string]interface{}{
+		"url": map[string]interface{}{"$eq": strings.TrimSpace(sourceURL)},
+	}
+	return c.pineconeDelete(indexInfo.Host, map[string]interface{}{
+		"namespace": namespace,
+		"filter":    filter,
+	})
+}
+
+func (c *Controller) pineconeDelete(host string, payload map[string]interface{}) error {
 	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, indexInfo.Host+"/vectors/delete", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, host+"/vectors/delete", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -716,9 +807,8 @@ func (c *Controller) pineconeQuery(userID, query string, topK int) ([]map[string
 // ── URL scraper ────────────────────────────────────────────────────────────────
 
 func (c *Controller) extractTextFromURL(source string) (string, error) {
-	u, err := url.Parse(source)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return "", fmt.Errorf("invalid url")
+	if _, err := c.validateScrapeTarget(source); err != nil {
+		return "", fmt.Errorf("url is not allowed")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -776,6 +866,13 @@ func (c *Controller) processPendingWebhookEvents(ctx context.Context) {
 		var attempts, maxAttempts int
 		if err := rows.Scan(&id, &userID, &configID, &eventType, &payloadText, &attempts, &maxAttempts, &webhookURL, &secret); err != nil {
 			c.logger.Error("failed to scan webhook event row", "error", err)
+			continue
+		}
+		if _, err := c.validateWebhookTarget(webhookURL); err != nil {
+			if _, updateErr := c.db.ExecContext(ctx, `UPDATE lead_webhook_events SET status='dead',last_error=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+				id, "blocked webhook target: "+err.Error()); updateErr != nil {
+				c.logger.Warn("failed to mark blocked webhook event dead", "event_id", id, "error", updateErr)
+			}
 			continue
 		}
 		nextAttempts := attempts + 1

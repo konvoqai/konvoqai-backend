@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,22 +16,44 @@ import (
 	"konvoq-backend/utils"
 )
 
+var publicSessionUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 func (c *Controller) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) {
-	key := chi.URLParam(r, "widgetKey")
+	key := strings.TrimSpace(chi.URLParam(r, "widgetKey"))
+	if key == "" {
+		utils.JSONErr(w, http.StatusNotFound, "widget not found")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	cached, err := c.redis.Get(ctx, "widget:"+key).Result()
 	if err == nil && cached != "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(cached))
-		return
+		var cachedPayload struct {
+			Response       json.RawMessage `json:"response"`
+			WidgetID       int64           `json:"widgetId"`
+			AllowedDomains []string        `json:"allowedDomains"`
+		}
+		if unmarshalErr := json.Unmarshal([]byte(cached), &cachedPayload); unmarshalErr == nil {
+			if !isWidgetRequestAllowed(cachedPayload.AllowedDomains, r) {
+				utils.JSONErr(w, http.StatusForbidden, "widget access denied for this domain")
+				return
+			}
+			if cachedPayload.WidgetID > 0 {
+				c.queueWidgetAnalytics(ctx, cachedPayload.WidgetID, "widget_loaded", map[string]interface{}{}, r)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(cachedPayload.Response)
+			return
+		}
 	}
 	var id int64
-	var userID, name string
+	var name string
 	var active bool
 	var cfgRaw []byte
-	err = c.db.QueryRow(`SELECT id,user_id,widget_name,is_active,widget_config FROM widget_keys WHERE widget_key=$1`, key).Scan(&id, &userID, &name, &active, &cfgRaw)
+	var domainsRaw string
+	err = c.db.QueryRow(`SELECT id,widget_name,is_active,widget_config,COALESCE(to_json(allowed_domains),'[]'::json)::text FROM widget_keys WHERE widget_key=$1`,
+		key).Scan(&id, &name, &active, &cfgRaw, &domainsRaw)
 	if err != nil || !active {
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			c.logRequestError(r, "public widget config query failed", err, "widget_key", key)
@@ -38,15 +61,30 @@ func (c *Controller) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) 
 		utils.JSONErr(w, http.StatusNotFound, "widget not found")
 		return
 	}
+	allowedDomains := parseAllowedDomainsJSON(domainsRaw)
+	if c.cfg.IsProduction && len(allowedDomains) == 0 {
+		utils.JSONErr(w, http.StatusForbidden, "widget allowed domains are not configured")
+		return
+	}
+	if !isWidgetRequestAllowed(allowedDomains, r) {
+		utils.JSONErr(w, http.StatusForbidden, "widget access denied for this domain")
+		return
+	}
 	if _, err := c.db.Exec(`UPDATE widget_keys SET usage_count=usage_count+1,last_used_at=CURRENT_TIMESTAMP WHERE id=$1`, id); err != nil {
 		c.logRequestWarn(r, "public widget usage counter update failed", err, "widget_key_id", id)
 	}
-	resp := map[string]interface{}{"success": true, "widget": map[string]interface{}{"id": id, "userId": userID, "name": name, "widgetKey": key, "settings": json.RawMessage(cfgRaw)}}
-	b, _ := json.Marshal(resp)
-	_ = c.redis.Set(ctx, "widget:"+key, string(b), 10*time.Minute).Err()
+	c.queueWidgetAnalytics(ctx, id, "widget_loaded", map[string]interface{}{}, r)
+	resp := map[string]interface{}{"success": true, "widget": map[string]interface{}{"id": id, "name": name, "widgetKey": key, "settings": json.RawMessage(cfgRaw)}}
+	responseBytes, _ := json.Marshal(resp)
+	cachedBytes, _ := json.Marshal(map[string]interface{}{
+		"response":       json.RawMessage(responseBytes),
+		"widgetId":       id,
+		"allowedDomains": allowedDomains,
+	})
+	_ = c.redis.Set(ctx, "widget:"+key, string(cachedBytes), 10*time.Minute).Err()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b)
+	_, _ = w.Write(responseBytes)
 }
 
 func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
@@ -63,21 +101,59 @@ func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusBadRequest, "message is required")
 		return
 	}
+	body.WidgetKey = strings.TrimSpace(body.WidgetKey)
 	var ownerID string
 	var widgetID int64
-	if err := c.db.QueryRow(`SELECT user_id,id FROM widget_keys WHERE widget_key=$1 AND is_active=TRUE`, body.WidgetKey).Scan(&ownerID, &widgetID); err != nil {
+	var domainsRaw string
+	if err := c.db.QueryRow(`SELECT user_id,id,COALESCE(to_json(allowed_domains),'[]'::json)::text FROM widget_keys WHERE widget_key=$1 AND is_active=TRUE`, body.WidgetKey).Scan(&ownerID, &widgetID, &domainsRaw); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			c.logRequestError(r, "public webhook widget lookup failed", err, "widget_key", body.WidgetKey)
 		}
 		utils.JSONErr(w, http.StatusNotFound, "widget not found")
 		return
 	}
+	allowedDomains := parseAllowedDomainsJSON(domainsRaw)
+	if c.cfg.IsProduction && len(allowedDomains) == 0 {
+		utils.JSONErr(w, http.StatusForbidden, "widget allowed domains are not configured")
+		return
+	}
+	if !isWidgetRequestAllowed(allowedDomains, r) {
+		utils.JSONErr(w, http.StatusForbidden, "widget access denied for this domain")
+		return
+	}
 	sessionID := strings.TrimSpace(body.SessionID)
 	if sessionID == "" {
-		sessionID = utils.RandomID("sess")
-	}
-	if _, err := c.db.Exec(`INSERT INTO chat_conversations (id,user_id,status,last_message_preview,last_message_at) VALUES ($1,$2,'active',$3,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET last_message_preview=EXCLUDED.last_message_preview,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`, sessionID, ownerID, body.Message); err != nil {
-		c.logRequestWarn(r, "public webhook conversation upsert failed", err, "widget_key", body.WidgetKey, "session_id", sessionID)
+		if err := c.db.QueryRow(`INSERT INTO chat_conversations (user_id,widget_key_id,status,last_message_preview,last_message_at) VALUES ($1,$2,'active',$3,CURRENT_TIMESTAMP) RETURNING id`,
+			ownerID, widgetID, body.Message).Scan(&sessionID); err != nil {
+			c.logRequestError(r, "public webhook conversation create failed", err, "widget_key", body.WidgetKey)
+			utils.JSONErr(w, http.StatusInternalServerError, "failed to create conversation")
+			return
+		}
+	} else {
+		if !publicSessionUUIDPattern.MatchString(sessionID) {
+			utils.JSONErr(w, http.StatusBadRequest, "sessionId must be a UUID")
+			return
+		}
+		if err := c.db.QueryRow(`INSERT INTO chat_conversations (id,user_id,widget_key_id,status,last_message_preview,last_message_at)
+			VALUES ($1,$2,$3,'active',$4,CURRENT_TIMESTAMP)
+			ON CONFLICT (id) DO UPDATE SET
+				last_message_preview=EXCLUDED.last_message_preview,
+				last_message_at=CURRENT_TIMESTAMP,
+				updated_at=CURRENT_TIMESTAMP,
+				widget_key_id=COALESCE(chat_conversations.widget_key_id,EXCLUDED.widget_key_id)
+			WHERE chat_conversations.user_id=EXCLUDED.user_id
+				AND chat_conversations.is_deleted=FALSE
+				AND (chat_conversations.widget_key_id IS NULL OR chat_conversations.widget_key_id=EXCLUDED.widget_key_id)
+			RETURNING id`,
+			sessionID, ownerID, widgetID, body.Message).Scan(&sessionID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				utils.JSONErr(w, http.StatusNotFound, "session not found")
+				return
+			}
+			c.logRequestWarn(r, "public webhook conversation upsert failed", err, "widget_key", body.WidgetKey, "session_id", sessionID)
+			utils.JSONErr(w, http.StatusInternalServerError, "failed to update conversation")
+			return
+		}
 	}
 	matches, matchErr := c.pineconeQuery(ownerID, body.Message, 5)
 	relevantMatches := relevantRAGMatches(matches, 0.65)
@@ -92,18 +168,25 @@ func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 			c.logRequestWarn(r, "public webhook response generation with context failed", aiErr, "widget_key", body.WidgetKey, "session_id", sessionID)
 		}
 	}
-	if _, err := c.db.Exec(`INSERT INTO chat_messages (conversation_id,user_id,role,content,metadata) VALUES ($1,$2,'user',$3,'{}'::jsonb),($1,$2,'assistant',$4,'{}'::jsonb)`, sessionID, ownerID, body.Message, answer); err != nil {
+	insertResult, err := c.db.Exec(`INSERT INTO chat_messages (conversation_id,user_id,role,content,metadata)
+		SELECT c.id,$2,v.role,v.content,'{}'::jsonb
+		FROM chat_conversations c
+		JOIN (VALUES ('user'::varchar,$3),('assistant'::varchar,$4)) AS v(role,content) ON TRUE
+		WHERE c.id=$1 AND c.user_id=$2 AND c.is_deleted=FALSE AND (c.widget_key_id IS NULL OR c.widget_key_id=$5)`,
+		sessionID, ownerID, body.Message, answer, widgetID)
+	if err != nil {
 		c.logRequestWarn(r, "public webhook message insert failed", err, "widget_key", body.WidgetKey, "session_id", sessionID)
+	} else if rows, rowsErr := insertResult.RowsAffected(); rowsErr == nil && rows != 2 {
+		c.requestLogger(r).Warn("public webhook message insert skipped due to session ownership mismatch",
+			"widget_key", body.WidgetKey, "session_id", sessionID, "rows_affected", rows)
+		utils.JSONErr(w, http.StatusNotFound, "session not found")
+		return
 	}
-	if _, err := c.db.Exec(`UPDATE chat_conversations SET message_count=message_count+2,last_message_preview=$2,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, sessionID, body.Message); err != nil {
+	if _, err := c.db.Exec(`UPDATE chat_conversations SET message_count=message_count+2,last_message_preview=$2,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND user_id=$3 AND is_deleted=FALSE AND (widget_key_id IS NULL OR widget_key_id=$4)`,
+		sessionID, body.Message, ownerID, widgetID); err != nil {
 		c.logRequestWarn(r, "public webhook conversation update failed", err, "widget_key", body.WidgetKey, "session_id", sessionID)
 	}
-	if b, marshalErr := json.Marshal(map[string]interface{}{
-		"widget_key_id": widgetID, "event_type": "message_sent", "event_data": map[string]interface{}{},
-		"ip": r.RemoteAddr, "user_agent": r.Header.Get("User-Agent"), "referer": r.Referer(),
-	}); marshalErr == nil {
-		_ = c.redis.RPush(r.Context(), "widget:analytics:buffer", string(b)).Err()
-	}
+	c.queueWidgetAnalytics(r.Context(), widgetID, "message_sent", map[string]interface{}{}, r)
 
 	if r.URL.Query().Get("stream") == "1" {
 		streamWidgetResponse(w, sessionID, answer)
@@ -178,9 +261,36 @@ func (c *Controller) WidgetPreviewPage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "public/widget/preview.html")
 }
 
-func (c *Controller) EmbedJS(w http.ResponseWriter, _ *http.Request) {
+func (c *Controller) EmbedJS(w http.ResponseWriter, r *http.Request) {
+	baseURL := publicBaseURL(r)
+	baseJSON, _ := json.Marshal(baseURL)
 	w.Header().Set("Content-Type", "application/javascript")
-	_, _ = w.Write([]byte("console.log('Witzo embed loader (Go)');"))
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write([]byte(fmt.Sprintf(`(function(){
+  var current = document.currentScript;
+  var widgetKey = '';
+  if (current) {
+    widgetKey = current.getAttribute('data-widget-key') || current.getAttribute('widget-key') || '';
+    try {
+      if (!widgetKey && current.src) {
+        var parsed = new URL(current.src, window.location.href);
+        widgetKey = parsed.searchParams.get('widgetKey') || '';
+      }
+    } catch (e) {}
+  }
+  if (!widgetKey && typeof window !== 'undefined') {
+    widgetKey = window.KONVOQ_WIDGET_KEY || '';
+  }
+  if (!widgetKey) {
+    console.error('Konvoq embed loader: missing widgetKey. Provide data-widget-key or ?widgetKey=');
+    return;
+  }
+  var baseURL = %s;
+  var script = document.createElement('script');
+  script.src = baseURL + '/api/v1/embed/' + encodeURIComponent(widgetKey) + '.js';
+  script.async = true;
+  document.head.appendChild(script);
+})();`, baseJSON)))
 }
 
 func (c *Controller) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
@@ -192,11 +302,21 @@ func (c *Controller) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
 
 	var configRaw []byte
 	var isActive bool
-	if err := c.db.QueryRow(`SELECT widget_config,is_active FROM widget_keys WHERE widget_key=$1`, key).Scan(&configRaw, &isActive); err != nil || !isActive {
+	var domainsRaw string
+	if err := c.db.QueryRow(`SELECT widget_config,is_active,COALESCE(to_json(allowed_domains),'[]'::json)::text FROM widget_keys WHERE widget_key=$1`, key).Scan(&configRaw, &isActive, &domainsRaw); err != nil || !isActive {
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			c.logRequestWarn(r, "embed script widget lookup failed", err, "widget_key", key)
 		}
 		utils.JSONErr(w, http.StatusNotFound, "widget not found")
+		return
+	}
+	allowedDomains := parseAllowedDomainsJSON(domainsRaw)
+	if c.cfg.IsProduction && len(allowedDomains) == 0 {
+		utils.JSONErr(w, http.StatusForbidden, "widget allowed domains are not configured")
+		return
+	}
+	if !isWidgetRequestAllowed(allowedDomains, r) {
+		utils.JSONErr(w, http.StatusForbidden, "widget access denied for this domain")
 		return
 	}
 
@@ -270,6 +390,25 @@ func (c *Controller) EmbedForWidget(w http.ResponseWriter, r *http.Request) {
 })();`, keyJSON, keyJSON, baseJSON, keyJSON, cfgJSON)))
 }
 
+func (c *Controller) queueWidgetAnalytics(ctx context.Context, widgetKeyID int64, eventType string, eventData map[string]interface{}, r *http.Request) {
+	if c.redis == nil || widgetKeyID <= 0 || strings.TrimSpace(eventType) == "" {
+		return
+	}
+	if eventData == nil {
+		eventData = map[string]interface{}{}
+	}
+	if b, marshalErr := json.Marshal(map[string]interface{}{
+		"widget_key_id": widgetKeyID,
+		"event_type":    eventType,
+		"event_data":    eventData,
+		"ip":            r.RemoteAddr,
+		"user_agent":    r.UserAgent(),
+		"referer":       r.Referer(),
+	}); marshalErr == nil {
+		_ = c.redis.RPush(ctx, "widget:analytics:buffer", string(b)).Err()
+	}
+}
+
 func publicBaseURL(r *http.Request) string {
 	scheme := "http"
 	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || r.TLS != nil {
@@ -294,17 +433,28 @@ func (c *Controller) PublicContact(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusBadRequest, "widgetKey is required")
 		return
 	}
+	body.WidgetKey = strings.TrimSpace(body.WidgetKey)
 	if strings.TrimSpace(body.SessionID) == "" {
 		body.SessionID = utils.RandomID("sess")
 	}
 	var widgetID int64
 	var ownerID string
-	err := c.db.QueryRow(`SELECT id,user_id FROM widget_keys WHERE widget_key=$1 AND is_active=TRUE`, body.WidgetKey).Scan(&widgetID, &ownerID)
+	var domainsRaw string
+	err := c.db.QueryRow(`SELECT id,user_id,COALESCE(to_json(allowed_domains),'[]'::json)::text FROM widget_keys WHERE widget_key=$1 AND is_active=TRUE`, body.WidgetKey).Scan(&widgetID, &ownerID, &domainsRaw)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			c.logRequestError(r, "public contact widget lookup failed", err, "widget_key", body.WidgetKey)
 		}
 		utils.JSONErr(w, http.StatusNotFound, "widget not found")
+		return
+	}
+	allowedDomains := parseAllowedDomainsJSON(domainsRaw)
+	if c.cfg.IsProduction && len(allowedDomains) == 0 {
+		utils.JSONErr(w, http.StatusForbidden, "widget allowed domains are not configured")
+		return
+	}
+	if !isWidgetRequestAllowed(allowedDomains, r) {
+		utils.JSONErr(w, http.StatusForbidden, "widget access denied for this domain")
 		return
 	}
 	var leadID string
@@ -368,6 +518,12 @@ func (c *Controller) PublicRating(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusBadRequest, "widgetKey and sessionId are required")
 		return
 	}
+	body.WidgetKey = strings.TrimSpace(body.WidgetKey)
+	body.SessionID = strings.TrimSpace(body.SessionID)
+	if body.WidgetKey == "" || body.SessionID == "" {
+		utils.JSONErr(w, http.StatusBadRequest, "widgetKey and sessionId are required")
+		return
+	}
 	if body.Rating != "up" && body.Rating != "down" {
 		if body.Rating == "??" || strings.EqualFold(body.Rating, "like") {
 			body.Rating = "up"
@@ -377,12 +533,22 @@ func (c *Controller) PublicRating(w http.ResponseWriter, r *http.Request) {
 	}
 	var ownerID string
 	var widgetID int64
-	err := c.db.QueryRow(`SELECT user_id,id FROM widget_keys WHERE widget_key=$1`, body.WidgetKey).Scan(&ownerID, &widgetID)
+	var domainsRaw string
+	err := c.db.QueryRow(`SELECT user_id,id,COALESCE(to_json(allowed_domains),'[]'::json)::text FROM widget_keys WHERE widget_key=$1 AND is_active=TRUE`, body.WidgetKey).Scan(&ownerID, &widgetID, &domainsRaw)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			c.logRequestError(r, "public rating widget lookup failed", err, "widget_key", body.WidgetKey, "session_id", body.SessionID)
 		}
 		utils.JSONErr(w, http.StatusNotFound, "widget not found")
+		return
+	}
+	allowedDomains := parseAllowedDomainsJSON(domainsRaw)
+	if c.cfg.IsProduction && len(allowedDomains) == 0 {
+		utils.JSONErr(w, http.StatusForbidden, "widget allowed domains are not configured")
+		return
+	}
+	if !isWidgetRequestAllowed(allowedDomains, r) {
+		utils.JSONErr(w, http.StatusForbidden, "widget access denied for this domain")
 		return
 	}
 	_, err = c.db.Exec(`INSERT INTO chat_ratings (user_id,session_id,widget_key_id,rating) VALUES ($1,$2,$3,$4) ON CONFLICT (user_id,session_id) DO UPDATE SET rating=EXCLUDED.rating`,

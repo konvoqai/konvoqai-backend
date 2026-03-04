@@ -4,7 +4,22 @@ export function sanitizeURL(url) {
 	if (!url) {
 		return "";
 	}
-	return /^(https?|mailto|tel):/i.test(url) ? String(url) : "";
+	const raw = String(url).trim();
+	try {
+		if (/^(mailto|tel):/i.test(raw)) {
+			return raw;
+		}
+		const parsed = new URL(raw, window.location.href);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			return "";
+		}
+		if (/[<>"'`\s]/.test(parsed.href)) {
+			return "";
+		}
+		return parsed.href;
+	} catch (_error) {
+		return "";
+	}
 }
 
 export function sanitizeHTML(value) {

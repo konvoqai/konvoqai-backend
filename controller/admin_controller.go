@@ -22,7 +22,12 @@ func (c *Controller) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
-	if !adminPasswordOK(c.cfg.AdminPassword, body.Password) || subtle.ConstantTimeCompare([]byte(body.Email), []byte(c.cfg.AdminEmail)) != 1 {
+	inputEmail := strings.ToLower(strings.TrimSpace(body.Email))
+	if c.cfg.IsProduction && !adminPasswordIsBcrypt(c.cfg.AdminPassword) {
+		utils.JSONErr(w, http.StatusServiceUnavailable, "admin authentication is misconfigured")
+		return
+	}
+	if !adminPasswordOK(c.cfg.AdminPassword, body.Password) || subtle.ConstantTimeCompare([]byte(inputEmail), []byte(strings.ToLower(strings.TrimSpace(c.cfg.AdminEmail)))) != 1 {
 		utils.JSONErr(w, http.StatusUnauthorized, "invalid admin credentials")
 		return
 	}
@@ -144,6 +149,11 @@ func adminPasswordOK(stored, provided string) bool {
 		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(provided)) == nil
 	}
 	return subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1
+}
+
+func adminPasswordIsBcrypt(stored string) bool {
+	v := strings.TrimSpace(stored)
+	return strings.HasPrefix(v, "$2a$") || strings.HasPrefix(v, "$2b$") || strings.HasPrefix(v, "$2y$")
 }
 
 func (c *Controller) AdminSetPlan(w http.ResponseWriter, r *http.Request) {

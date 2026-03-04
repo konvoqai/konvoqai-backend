@@ -41,7 +41,7 @@ func New(cfg config.Config, db *sql.DB, redisClient *redis.Client, logger *slog.
 		docSem:    make(chan struct{}, 10),
 		scrapeSem: make(chan struct{}, 5),
 	}
-	c.Auth = auth.New()
+	c.Auth = auth.New(cfg.GoogleClientID, cfg.GoogleRedirectURL)
 	return c
 }
 

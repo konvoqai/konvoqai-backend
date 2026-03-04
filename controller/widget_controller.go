@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -15,25 +16,40 @@ import (
 
 func (c *Controller) CreateWidget(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
 	var body struct {
-		Name        string                 `json:"name"`
-		Theme       string                 `json:"theme"`
-		Primary     string                 `json:"primaryColor"`
-		WelcomeText string                 `json:"welcomeText"`
-		Settings    map[string]interface{} `json:"settings"`
+		Name           string                 `json:"name"`
+		Theme          string                 `json:"theme"`
+		Primary        string                 `json:"primaryColor"`
+		WelcomeText    string                 `json:"welcomeText"`
+		AllowedDomains []string               `json:"allowedDomains"`
+		Settings       map[string]interface{} `json:"settings"`
 	}
 	_ = utils.DecodeJSON(r, &body)
 	cfg := map[string]interface{}{"theme": body.Theme, "primaryColor": body.Primary, "welcomeText": body.WelcomeText}
 	for k, v := range body.Settings {
 		cfg[k] = v
 	}
+	allowedDomains := normalizeAllowedDomains(body.AllowedDomains)
+	if fromPayload, ok := extractAllowedDomainsFromPayload(body.Settings); ok {
+		allowedDomains = fromPayload
+	}
 	cfgJSON, _ := json.Marshal(cfg)
+	allowedDomainsJSON, _ := json.Marshal(allowedDomains)
 	widgetKey := generateWidgetKey()
 	var id int64
 	var persistedWidgetKey string
-	err := c.db.QueryRow(`INSERT INTO widget_keys (user_id,widget_key,widget_name,widget_config,is_active) VALUES ($1,$2,$3,$4::jsonb,TRUE)
-		ON CONFLICT (user_id) DO UPDATE SET widget_name=EXCLUDED.widget_name,widget_config=EXCLUDED.widget_config,is_active=TRUE,updated_at=CURRENT_TIMESTAMP
+	err := c.db.QueryRow(`INSERT INTO widget_keys (user_id,widget_key,widget_name,allowed_domains,widget_config,is_active) VALUES (
+			$1,$2,$3,
+			CASE WHEN jsonb_array_length($4::jsonb)=0 THEN NULL ELSE ARRAY(SELECT jsonb_array_elements_text($4::jsonb)) END,
+			$5::jsonb,TRUE
+		)
+		ON CONFLICT (user_id) DO UPDATE SET
+			widget_name=EXCLUDED.widget_name,
+			allowed_domains=EXCLUDED.allowed_domains,
+			widget_config=EXCLUDED.widget_config,
+			is_active=TRUE,
+			updated_at=CURRENT_TIMESTAMP
 		RETURNING id,widget_key`,
-		claims.UserID, widgetKey, coalesce(body.Name, "My Chat Widget"), string(cfgJSON)).Scan(&id, &persistedWidgetKey)
+		claims.UserID, widgetKey, coalesce(body.Name, "My Chat Widget"), string(allowedDomainsJSON), string(cfgJSON)).Scan(&id, &persistedWidgetKey)
 	if err != nil {
 		c.logRequestError(r, "create widget upsert failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
@@ -44,7 +60,7 @@ func (c *Controller) CreateWidget(w http.ResponseWriter, r *http.Request, claims
 	_ = c.redis.Del(ctx, "widget:"+persistedWidgetKey).Err()
 	utils.JSONOK(w, map[string]interface{}{"success": true, "widget": map[string]interface{}{
 		"id": id, "userId": claims.UserID, "widgetKey": persistedWidgetKey,
-		"name": coalesce(body.Name, "My Chat Widget"), "settings": cfg, "isConfigured": isWidgetConfigured(cfg),
+		"name": coalesce(body.Name, "My Chat Widget"), "settings": cfg, "allowedDomains": allowedDomains, "isConfigured": isWidgetConfigured(cfg),
 	}})
 }
 
@@ -53,9 +69,10 @@ func (c *Controller) GetWidget(w http.ResponseWriter, r *http.Request, claims To
 	var key, name string
 	var active bool
 	var cfgRaw []byte
+	var domainsRaw string
 	var created, updated time.Time
-	err := c.db.QueryRow(`SELECT id,widget_key,widget_name,is_active,widget_config,created_at,updated_at FROM widget_keys WHERE user_id=$1`,
-		claims.UserID).Scan(&id, &key, &name, &active, &cfgRaw, &created, &updated)
+	err := c.db.QueryRow(`SELECT id,widget_key,widget_name,is_active,widget_config,COALESCE(to_json(allowed_domains),'[]'::json)::text,created_at,updated_at FROM widget_keys WHERE user_id=$1`,
+		claims.UserID).Scan(&id, &key, &name, &active, &cfgRaw, &domainsRaw, &created, &updated)
 	if err != nil {
 		c.logRequestWarn(r, "get widget query failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusNotFound, "widget not found")
@@ -63,9 +80,10 @@ func (c *Controller) GetWidget(w http.ResponseWriter, r *http.Request, claims To
 	}
 	cfg := map[string]interface{}{}
 	_ = json.Unmarshal(cfgRaw, &cfg)
+	allowedDomains := parseAllowedDomainsJSON(domainsRaw)
 	utils.JSONOK(w, map[string]interface{}{"success": true, "widget": map[string]interface{}{
 		"id": id, "userId": claims.UserID, "widgetKey": key, "name": name,
-		"isActive": active, "isConfigured": isWidgetConfigured(cfg), "settings": cfg, "createdAt": created, "updatedAt": updated,
+		"isActive": active, "isConfigured": isWidgetConfigured(cfg), "settings": cfg, "allowedDomains": allowedDomains, "createdAt": created, "updatedAt": updated,
 	}})
 }
 
@@ -80,10 +98,32 @@ func (c *Controller) UpdateWidget(w http.ResponseWriter, r *http.Request, claims
 	if settings, ok := body["settings"].(map[string]interface{}); ok {
 		configPayload = settings
 	}
+	allowedDomains, hasAllowedDomains := extractAllowedDomainsFromPayload(body)
+	if !hasAllowedDomains {
+		allowedDomains, hasAllowedDomains = extractAllowedDomainsFromPayload(configPayload)
+	}
 	cfgJSON, _ := json.Marshal(configPayload)
+	allowedDomainsParam := sql.NullString{}
+	if hasAllowedDomains {
+		allowedDomainsJSON, _ := json.Marshal(allowedDomains)
+		allowedDomainsParam = sql.NullString{
+			String: string(allowedDomainsJSON),
+			Valid:  true,
+		}
+	}
 	var widgetKey string
-	err := c.db.QueryRow(`UPDATE widget_keys SET widget_name=COALESCE($2,widget_name),widget_config=COALESCE($3::jsonb,widget_config),updated_at=CURRENT_TIMESTAMP WHERE user_id=$1 RETURNING widget_key`,
-		claims.UserID, utils.Nullable(name), string(cfgJSON)).Scan(&widgetKey)
+	err := c.db.QueryRow(`UPDATE widget_keys SET
+			widget_name=COALESCE($2,widget_name),
+			widget_config=COALESCE($3::jsonb,widget_config),
+			allowed_domains=CASE
+				WHEN $4::jsonb IS NULL THEN allowed_domains
+				WHEN jsonb_array_length($4::jsonb)=0 THEN NULL
+				ELSE ARRAY(SELECT jsonb_array_elements_text($4::jsonb))
+			END,
+			updated_at=CURRENT_TIMESTAMP
+		WHERE user_id=$1
+		RETURNING widget_key`,
+		claims.UserID, utils.Nullable(name), string(cfgJSON), allowedDomainsParam).Scan(&widgetKey)
 	if err != nil {
 		c.logRequestError(r, "update widget failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")

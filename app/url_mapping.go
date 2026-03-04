@@ -2,8 +2,10 @@ package app
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/httprate"
 )
 
 func (a *App) registerRoutes(r chi.Router) {
@@ -20,6 +22,8 @@ func (a *App) registerRoutes(r chi.Router) {
 	r.Route("/api/chat", a.mapChatRoutes)
 	r.Route("/api/documents", a.mapDocumentRoutes)
 	r.Route("/api/widget", a.mapWidgetRoutes)
+	r.Route("/api/projects", a.mapProjectRoutes)
+	r.Route("/api/chatbots", a.mapChatbotRoutes)
 	r.Route("/api/leads", a.mapLeadsRoutes)
 	r.Route("/api/feedback", a.mapFeedbackRoutes)
 	r.Route("/api/admin", a.mapAdminRoutes)
@@ -33,12 +37,12 @@ func (a *App) registerRoutes(r chi.Router) {
 // Auth — public (no token required) + session management (protected)
 func (a *App) mapAuthRoutes(r chi.Router) {
 	r.Get("/csrf-token", a.ctrl.GetCSRFToken)
-	r.Post("/request-code", a.ctrl.RequestCode)
-	r.Post("/verify", a.ctrl.VerifyCode)
-	r.Post("/refresh", a.ctrl.RefreshToken)
+	r.With(httprate.LimitByIP(20, 10*time.Minute)).Post("/request-code", a.ctrl.RequestCode)
+	r.With(httprate.LimitByIP(30, 10*time.Minute)).Post("/verify", a.ctrl.VerifyCode)
+	r.With(httprate.LimitByIP(60, 10*time.Minute)).Post("/refresh", a.ctrl.RefreshToken)
 	r.Get("/google", a.ctrl.GoogleLogin)
 	r.Get("/google/callback", a.ctrl.GoogleCallback)
-	r.Post("/google/verify", a.ctrl.VerifyGoogle)
+	r.With(httprate.LimitByIP(30, 10*time.Minute)).Post("/google/verify", a.ctrl.VerifyGoogle)
 
 	r.Post("/logout", a.auth(a.ctrl.Logout))
 	r.Post("/logout-all", a.auth(a.ctrl.LogoutAll))
@@ -98,6 +102,15 @@ func (a *App) mapWidgetRoutes(r chi.Router) {
 	r.Get("/analytics", a.auth(a.ctrl.WidgetAnalytics))
 }
 
+// Projects and chatbots (currently mapped to per-user widget resources)
+func (a *App) mapProjectRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListProjects))
+}
+
+func (a *App) mapChatbotRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListChatbots))
+}
+
 // Leads
 func (a *App) mapLeadsRoutes(r chi.Router) {
 	r.Get("/", a.auth(a.ctrl.ListLeads))
@@ -119,7 +132,7 @@ func (a *App) mapFeedbackRoutes(r chi.Router) {
 
 // Admin
 func (a *App) mapAdminRoutes(r chi.Router) {
-	r.Post("/login", a.ctrl.AdminLogin)
+	r.With(httprate.LimitByIP(10, 10*time.Minute)).Post("/login", a.ctrl.AdminLogin)
 	r.Get("/dashboard", a.admin(a.ctrl.AdminDashboard))
 	r.Get("/insights", a.admin(a.ctrl.AdminInsights))
 	r.Get("/users", a.admin(a.ctrl.AdminUsers))
@@ -131,9 +144,9 @@ func (a *App) mapAdminRoutes(r chi.Router) {
 // Public widget API (versioned, no auth)
 func (a *App) mapPublicV1Routes(r chi.Router) {
 	r.Get("/widget/config/{widgetKey}", a.ctrl.PublicWidgetConfig)
-	r.Post("/webhook", a.ctrl.PublicWebhook)
+	r.With(httprate.LimitByIP(300, time.Minute)).Post("/webhook", a.ctrl.PublicWebhook)
 	r.Get("/widget/embed.js", a.ctrl.EmbedJS)
 	r.Get("/embed/{widgetKey}.js", a.ctrl.EmbedForWidget)
-	r.Post("/widget/contact", a.ctrl.PublicContact)
-	r.Post("/widget/rating", a.ctrl.PublicRating)
+	r.With(httprate.LimitByIP(120, time.Minute)).Post("/widget/contact", a.ctrl.PublicContact)
+	r.With(httprate.LimitByIP(240, time.Minute)).Post("/widget/rating", a.ctrl.PublicRating)
 }

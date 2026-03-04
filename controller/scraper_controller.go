@@ -46,6 +46,10 @@ func (c *Controller) Scrape(w http.ResponseWriter, r *http.Request, claims Token
 		utils.JSONErr(w, http.StatusBadRequest, "invalid url")
 		return
 	}
+	if _, err := c.validateScrapeTarget(sourceURL); err != nil {
+		utils.JSONErr(w, http.StatusBadRequest, "url is not allowed")
+		return
+	}
 	limits := limitsForPlan(user.PlanType)
 
 	var currentSourcePages int
@@ -143,17 +147,20 @@ func (c *Controller) runScrapeJob(userID, sourceURL, jobID string, maxPages int)
 	}
 
 	c.updateScrapeJob(jobID, "scraping", 55, "Chunking scraped pages", "")
-	chunks := c.buildRAGChunks(userID, pages)
+	chunks := c.buildRAGChunks(userID, sourceURL, pages)
 	if len(chunks) == 0 {
 		c.updateScrapeJob(jobID, "failed", 100, "Scraping failed", "no chunks generated from scraped pages")
 		return
 	}
 
-	c.updateScrapeJob(jobID, "indexing", 70, "Resetting vector namespace", "")
-	if err := c.pineconeDeleteNamespace(userID); err != nil {
-		c.logger.Warn("scrape namespace reset failed", "user_id", userID, "url", sourceURL, "job_id", jobID, "error", err)
+	c.updateScrapeJob(jobID, "indexing", 70, "Refreshing vectors for source", "")
+	if err := c.pineconeDeleteBySource(userID, "website", sourceURL); err != nil {
+		c.logger.Warn("scrape source vector cleanup failed", "user_id", userID, "url", sourceURL, "job_id", jobID, "error", err)
 		c.updateScrapeJob(jobID, "failed", 100, "Indexing failed", err.Error())
 		return
+	}
+	if err := c.pineconeDeleteByURL(userID, sourceURL); err != nil {
+		c.logger.Warn("scrape legacy root-url vector cleanup failed", "user_id", userID, "url", sourceURL, "job_id", jobID, "error", err)
 	}
 
 	c.updateScrapeJob(jobID, "indexing", 85, "Indexing content", "")
@@ -197,6 +204,10 @@ func (c *Controller) crawlWebsite(startURL string, maxPages int) ([]scrapedPage,
 			continue
 		}
 		visited[current] = struct{}{}
+		if _, err := c.validateScrapeTarget(current); err != nil {
+			c.logger.Warn("scrape crawl skipped blocked target", "url", current, "error", err)
+			continue
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, current, nil)
@@ -363,7 +374,7 @@ func shouldSkipCrawlPath(rawPath string) bool {
 	}
 }
 
-func (c *Controller) buildRAGChunks(userID string, pages []scrapedPage) []ragChunk {
+func (c *Controller) buildRAGChunks(userID, sourceURL string, pages []scrapedPage) []ragChunk {
 	widgetKey := c.userWidgetKey(userID)
 	chunks := make([]ragChunk, 0, len(pages)*2)
 	for _, page := range pages {
@@ -375,6 +386,8 @@ func (c *Controller) buildRAGChunks(userID string, pages []scrapedPage) []ragChu
 				Text:       chunk,
 				ChunkIndex: i,
 				WidgetKey:  widgetKey,
+				SourceType: "website",
+				SourceKey:  sourceURL,
 			})
 		}
 	}
@@ -557,9 +570,22 @@ func (c *Controller) DeleteSource(w http.ResponseWriter, r *http.Request, claims
 		utils.JSONErr(w, http.StatusBadRequest, "url is required")
 		return
 	}
-	_, err := c.db.Exec(`DELETE FROM scraper_sources WHERE user_id=$1 AND source_url=$2`, claims.UserID, strings.TrimSpace(rawURL))
+	normalizedURL, err := normalizeScrapeURL(strings.TrimSpace(rawURL))
 	if err != nil {
-		c.logRequestError(r, "delete source failed", err, "user_id", claims.UserID, "url", strings.TrimSpace(rawURL))
+		utils.JSONErr(w, http.StatusBadRequest, "invalid url")
+		return
+	}
+	if err := c.pineconeDeleteBySource(claims.UserID, "website", normalizedURL); err != nil {
+		c.logRequestError(r, "delete source vector cleanup failed", err, "user_id", claims.UserID, "url", normalizedURL)
+		utils.JSONErr(w, http.StatusBadGateway, "failed to remove source vectors")
+		return
+	}
+	if err := c.pineconeDeleteByURL(claims.UserID, normalizedURL); err != nil {
+		c.logRequestWarn(r, "delete source legacy vector cleanup failed", err, "user_id", claims.UserID, "url", normalizedURL)
+	}
+	_, err = c.db.Exec(`DELETE FROM scraper_sources WHERE user_id=$1 AND source_url=$2`, claims.UserID, normalizedURL)
+	if err != nil {
+		c.logRequestError(r, "delete source failed", err, "user_id", claims.UserID, "url", normalizedURL)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -567,6 +593,11 @@ func (c *Controller) DeleteSource(w http.ResponseWriter, r *http.Request, claims
 }
 
 func (c *Controller) DeleteAllSources(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
+	if err := c.pineconeDeleteAll(claims.UserID); err != nil {
+		c.logRequestError(r, "delete all source vectors failed", err, "user_id", claims.UserID)
+		utils.JSONErr(w, http.StatusBadGateway, "failed to remove vectors")
+		return
+	}
 	if _, err := c.db.Exec(`DELETE FROM scraper_sources WHERE user_id=$1`, claims.UserID); err != nil {
 		c.logRequestError(r, "delete all sources failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")

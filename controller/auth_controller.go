@@ -20,7 +20,7 @@ func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord,
 	var emptyUser UserRecord
 	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if raw == "" {
-		if ck, err := r.Cookie("witzo_access_token"); err == nil {
+		if ck, err := r.Cookie("konvoq_access_token"); err == nil {
 			raw = ck.Value
 		}
 	}
@@ -111,7 +111,7 @@ func (c *Controller) GetCSRFToken(w http.ResponseWriter, r *http.Request) {
 	if err := c.redis.Set(ctx, "csrf:"+token, "1", 24*time.Hour).Err(); err != nil {
 		c.logRequestWarn(r, "csrf token cache set failed", err)
 	}
-	http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: token, Path: "/", HttpOnly: false, Expires: time.Now().Add(24 * time.Hour)})
+	c.setCSRFCookie(w, token, time.Now().Add(24*time.Hour))
 	utils.JSONOK(w, map[string]interface{}{"success": true, "csrfToken": token})
 }
 
@@ -169,7 +169,15 @@ func (c *Controller) RequestCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.sendVerificationEmail(email, code)
-	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "Verification code sent", "devCode": code, "expiresIn": c.cfg.VerifyCodeMinutes * 60})
+	resp := map[string]interface{}{
+		"success":   true,
+		"message":   "Verification code sent",
+		"expiresIn": c.cfg.VerifyCodeMinutes * 60,
+	}
+	if c.cfg.AuthIncludeDevCode {
+		resp["devCode"] = code
+	}
+	utils.JSONOK(w, resp)
 }
 
 func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
@@ -296,12 +304,11 @@ func (c *Controller) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{Name: "witzo_access_token", Value: accessToken, HttpOnly: true, Path: "/", Expires: accessExp})
-	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: refreshToken, HttpOnly: true, Path: "/", Expires: refreshExp})
+	c.setAuthCookies(w, accessToken, accessExp, refreshToken, refreshExp)
 	if firstSignup {
 		c.sendWelcomeEmail(email)
 	}
-	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "Login successful", "accessToken": accessToken, "refreshToken": refreshToken, "user": userResponse(updatedUser, sessionID)})
+	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "Login successful", "user": userResponse(updatedUser, sessionID)})
 }
 
 func (c *Controller) RefreshToken(w http.ResponseWriter, r *http.Request) {
@@ -361,9 +368,8 @@ func (c *Controller) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "witzo_access_token", Value: newAccess, HttpOnly: true, Path: "/", Expires: accessExp})
-	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: newRefresh, HttpOnly: true, Path: "/", Expires: refreshExp})
-	utils.JSONOK(w, map[string]interface{}{"success": true, "accessToken": newAccess, "newRefreshToken": newRefresh})
+	c.setAuthCookies(w, newAccess, accessExp, newRefresh, refreshExp)
+	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "Token refreshed successfully"})
 }
 
 func (c *Controller) Logout(w http.ResponseWriter, r *http.Request, claims TokenClaims, _ UserRecord) {
@@ -372,8 +378,7 @@ func (c *Controller) Logout(w http.ResponseWriter, r *http.Request, claims Token
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "witzo_access_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
-	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
+	c.clearAuthCookies(w)
 	utils.JSONOK(w, map[string]interface{}{"success": true, "message": "Logged out"})
 }
 
@@ -528,7 +533,6 @@ func (c *Controller) LogoutAll(w http.ResponseWriter, r *http.Request, claims To
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "witzo_access_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
-	http.SetCookie(w, &http.Cookie{Name: "witzo_refresh_token", Value: "", HttpOnly: true, Path: "/", MaxAge: -1})
+	c.clearAuthCookies(w)
 	utils.JSONOK(w, map[string]interface{}{"success": true})
 }

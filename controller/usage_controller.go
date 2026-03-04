@@ -2,7 +2,6 @@ package controller
 
 import (
 	"database/sql"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -70,15 +69,30 @@ func (c *Controller) VerifyGoogle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		IDToken string `json:"idToken"`
+		Name    string `json:"name"`
 	}
-	if err := utils.DecodeJSON(r, &body); err != nil || strings.TrimSpace(body.Email) == "" {
-		utils.JSONErr(w, http.StatusBadRequest, "email is required")
+	if err := utils.DecodeJSON(r, &body); err != nil || strings.TrimSpace(body.IDToken) == "" {
+		utils.JSONErr(w, http.StatusBadRequest, "idToken is required")
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(body.Email))
-	name := strings.TrimSpace(body.Name)
+	info, err := c.verifyGoogleIDToken(r.Context(), body.IDToken)
+	if err != nil {
+		c.logRequestWarn(r, "verify google id token failed", err)
+		utils.JSONErr(w, http.StatusUnauthorized, "invalid google token")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(info.Email))
+	name := strings.TrimSpace(info.Name)
+	if name == "" {
+		name = strings.TrimSpace(body.Name)
+	}
+	if email == "" {
+		utils.JSONErr(w, http.StatusUnauthorized, "google account email is required")
+		return
+	}
+	firstSignup := false
+	createdUser := false
 
 	tx, err := c.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -88,51 +102,117 @@ func (c *Controller) VerifyGoogle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	var userID string
-	err = tx.QueryRow(`SELECT id FROM users WHERE email=$1`, email).Scan(&userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRow(`INSERT INTO users (email,full_name,profile_completed) VALUES ($1,$2,CASE WHEN COALESCE($2,'')<>'' THEN TRUE ELSE FALSE END) RETURNING id`,
-			email, utils.Nullable(name)).Scan(&userID)
-	}
-	if err != nil {
-		c.logRequestError(r, "verify google user lookup/create failed", err, "email", email)
-		utils.JSONErr(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	if name != "" {
-		if _, err := tx.Exec(`UPDATE users SET full_name=CASE WHEN COALESCE(full_name,'')='' THEN $2 ELSE full_name END, profile_completed=CASE WHEN profile_completed=FALSE AND COALESCE($2,'')<>'' THEN TRUE ELSE profile_completed END WHERE id=$1`,
-			userID, name); err != nil {
-			c.logRequestError(r, "verify google user update failed", err, "email", email, "user_id", userID)
+	row := tx.QueryRow(`SELECT id,email,is_verified,plan_type,conversations_used,conversations_limit,plan_reset_date,
+		login_count,full_name,company_name,phone_number,country,job_title,industry,company_website,
+		profile_completed,profile_prompt_required_at,profile_completed_at,onboarding_completed_at
+		FROM users WHERE email=$1`, email)
+	user, queryErr := scanUser(row)
+	switch queryErr {
+	case nil:
+		firstSignup = !user.IsVerified
+	default:
+		if queryErr != sql.ErrNoRows {
+			c.logRequestError(r, "verify google user lookup failed", queryErr, "email", email)
+			utils.JSONErr(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		firstSignup = true
+		createdUser = true
+		if err := tx.QueryRow(`INSERT INTO users (email,full_name,is_verified,profile_completed,last_login,login_count)
+			VALUES ($1,$2,TRUE,CASE WHEN COALESCE($2,'')<>'' THEN TRUE ELSE FALSE END,CURRENT_TIMESTAMP,1)
+			RETURNING id,email,is_verified,plan_type,conversations_used,conversations_limit,plan_reset_date,
+				login_count,full_name,company_name,phone_number,country,job_title,industry,company_website,
+				profile_completed,profile_prompt_required_at,profile_completed_at,onboarding_completed_at`,
+			email, utils.Nullable(name)).Scan(
+			&user.ID, &user.Email, &user.IsVerified, &user.PlanType, &user.ConversationsUsed, &user.ConversationsLimit, &user.PlanResetDate,
+			&user.LoginCount, &user.FullName, &user.CompanyName, &user.PhoneNumber, &user.Country, &user.JobTitle, &user.Industry, &user.CompanyWebsite,
+			&user.ProfileCompleted, &user.ProfilePromptRequired, &user.ProfileCompletedAt, &user.OnboardingCompletedAt,
+		); err != nil {
+			c.logRequestError(r, "verify google user create failed", err, "email", email)
 			utils.JSONErr(w, http.StatusInternalServerError, "db error")
 			return
 		}
 	}
 
-	var reqCount int
-	_ = tx.QueryRow(`SELECT COUNT(*) FROM verification_codes WHERE user_id=$1 AND created_at > NOW() - INTERVAL '1 hour' AND is_used=FALSE`, userID).Scan(&reqCount)
-	if reqCount >= 3 {
-		utils.JSONErr(w, http.StatusTooManyRequests, "Too many verification code requests. Please try again later.")
+	if !createdUser {
+		if _, err := tx.Exec(`UPDATE users
+			SET is_verified=TRUE,
+				last_login=CURRENT_TIMESTAMP,
+				login_count=login_count+1,
+				full_name=CASE WHEN COALESCE(full_name,'')='' THEN $2 ELSE full_name END,
+				profile_completed=CASE WHEN profile_completed=FALSE AND COALESCE($2,'')<>'' THEN TRUE ELSE profile_completed END,
+				profile_prompt_required_at=CASE
+					WHEN (login_count + 1) > 3 AND profile_completed=FALSE THEN COALESCE(profile_prompt_required_at, CURRENT_TIMESTAMP)
+					ELSE profile_prompt_required_at
+				END,
+				updated_at=CURRENT_TIMESTAMP
+			WHERE id=$1`,
+			user.ID, utils.Nullable(name)); err != nil {
+			c.logRequestError(r, "verify google user update failed", err, "email", email, "user_id", user.ID)
+			utils.JSONErr(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+
+	var sessionID int64
+	if err := tx.QueryRow(`INSERT INTO sessions (user_id,access_token,refresh_token,access_token_expires_at,refresh_token_expires_at,ip_address,user_agent)
+		VALUES ($1,'pending','pending',NOW()+INTERVAL '15 minutes',NOW()+INTERVAL '7 days',$2,$3)
+		RETURNING id`, user.ID, r.RemoteAddr, r.UserAgent()).Scan(&sessionID); err != nil {
+		c.logRequestError(r, "verify google session insert failed", err, "email", email, "user_id", user.ID)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
-	_, _ = tx.Exec(`UPDATE verification_codes SET is_used=TRUE WHERE user_id=$1 AND is_used=FALSE`, userID)
-	code := utils.RandomCode()
-	expires := time.Now().Add(time.Duration(c.cfg.VerifyCodeMinutes) * time.Minute)
-	if _, err := tx.Exec(`INSERT INTO verification_codes (user_id,code,expires_at) VALUES ($1,$2,$3)`, userID, code, expires); err != nil {
-		c.logRequestError(r, "verify google code insert failed", err, "user_id", userID, "email", email)
+	accessToken, accessExp, err := c.createToken(user.ID, email, sessionID, "access", c.cfg.JWTSecret, time.Duration(c.cfg.AccessTokenMinutes)*time.Minute)
+	if err != nil {
+		c.logRequestError(r, "verify google access token creation failed", err, "email", email, "user_id", user.ID, "session_id", sessionID)
+		utils.JSONErr(w, http.StatusInternalServerError, "token error")
+		return
+	}
+	refreshToken, refreshExp, err := c.createToken(user.ID, email, sessionID, "refresh", c.cfg.JWTRefreshSecret, time.Duration(c.cfg.RefreshTokenDays)*24*time.Hour)
+	if err != nil {
+		c.logRequestError(r, "verify google refresh token creation failed", err, "email", email, "user_id", user.ID, "session_id", sessionID)
+		utils.JSONErr(w, http.StatusInternalServerError, "token error")
+		return
+	}
+	if _, err := tx.Exec(`UPDATE sessions
+		SET access_token=$1,refresh_token=$2,access_token_expires_at=$3,refresh_token_expires_at=$4
+		WHERE id=$5`,
+		utils.HashToken(accessToken), utils.HashToken(refreshToken), accessExp, refreshExp, sessionID); err != nil {
+		c.logRequestError(r, "verify google session token update failed", err, "email", email, "user_id", user.ID, "session_id", sessionID)
+		utils.JSONErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if _, err := tx.Exec(`INSERT INTO widget_keys (user_id, widget_key, widget_name, widget_config, is_active)
+		VALUES ($1, $2, 'My Chat Widget', '{}'::jsonb, TRUE)
+		ON CONFLICT (user_id) DO NOTHING`, user.ID, generateWidgetKey()); err != nil {
+		c.logRequestWarn(r, "verify google ensure widget key failed", err, "email", email, "user_id", user.ID)
+	}
+
+	row = tx.QueryRow(`SELECT id,email,is_verified,plan_type,conversations_used,conversations_limit,plan_reset_date,
+		login_count,full_name,company_name,phone_number,country,job_title,industry,company_website,
+		profile_completed,profile_prompt_required_at,profile_completed_at,onboarding_completed_at
+		FROM users WHERE id=$1`, user.ID)
+	updatedUser, err := scanUser(row)
+	if err != nil {
+		c.logRequestError(r, "verify google updated user query failed", err, "email", email, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		c.logRequestError(r, "verify google transaction commit failed", err, "user_id", userID, "email", email)
+		c.logRequestError(r, "verify google transaction commit failed", err, "email", email, "user_id", user.ID, "session_id", sessionID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	c.sendVerificationEmail(email, code)
+
+	c.setAuthCookies(w, accessToken, accessExp, refreshToken, refreshExp)
+	if firstSignup {
+		c.sendWelcomeEmail(email)
+	}
 	utils.JSONOK(w, map[string]interface{}{
-		"success":   true,
-		"message":   "Verification code sent",
-		"email":     email,
-		"expiresIn": c.cfg.VerifyCodeMinutes * 60,
+		"success": true,
+		"message": "Login successful",
+		"user":    userResponse(updatedUser, sessionID),
 	})
 }

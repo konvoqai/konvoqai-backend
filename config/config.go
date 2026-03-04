@@ -8,13 +8,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"konvoq-backend/envx"
 )
 
 type Config struct {
-	Environment string
-	ServiceName string
+	Environment  string
+	IsProduction bool
+	ServiceName  string
 
 	Port   string
 	DBURL  string
@@ -56,6 +58,10 @@ type Config struct {
 	EmailPassword string
 	EmailFrom     string
 
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
+
 	WebhookProcessIntervalSec int
 	AnalyticsFlushIntervalSec int
 
@@ -65,6 +71,10 @@ type Config struct {
 	LogColor     bool
 
 	CORSAllowedOrigins []string
+
+	AuthIncludeDevCode   bool
+	ExposeDetailedHealth bool
+	ExposeMetrics        bool
 }
 
 func getEnv(key, fallback string) string {
@@ -117,9 +127,31 @@ func getEnvList(key string, fallback []string) []string {
 func randomSecret() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "dev-secret"
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
 	return hex.EncodeToString(b)
+}
+
+func normalizeEnvironment(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "prod":
+		return "production"
+	case "dev":
+		return "development"
+	case "stage":
+		return "staging"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func isProductionEnvironment(raw string) bool {
+	return normalizeEnvironment(raw) == "production"
+}
+
+func isBcryptHash(value string) bool {
+	v := strings.TrimSpace(value)
+	return strings.HasPrefix(v, "$2a$") || strings.HasPrefix(v, "$2b$") || strings.HasPrefix(v, "$2y$")
 }
 
 func requireSecret(key string) string {
@@ -127,8 +159,8 @@ func requireSecret(key string) string {
 	if v != "" {
 		return v
 	}
-	env := strings.ToLower(getEnv("GO_ENV", getEnv("NODE_ENV", "development")))
-	if env == "production" {
+	env := normalizeEnvironment(getEnv("GO_ENV", getEnv("NODE_ENV", "development")))
+	if isProductionEnvironment(env) {
 		panic("missing required env: " + key)
 	}
 	return randomSecret()
@@ -153,13 +185,45 @@ func Load() Config {
 
 	redisHost := getEnv("REDIS_CACHE_HOST", getEnv("REDIS_HOST", "localhost"))
 	redisPort := getEnvInt("REDIS_CACHE_PORT", getEnvInt("REDIS_PORT", 6379))
-	environment := strings.ToLower(getEnv("GO_ENV", getEnv("NODE_ENV", "development")))
+	environment := normalizeEnvironment(getEnv("GO_ENV", getEnv("NODE_ENV", "development")))
 	defaultLogFormat := "text"
 	defaultLogColor := true
+	defaultCORSOrigins := []string{
+		"http://localhost:3000",
+		"http://localhost:3001",
+		"http://localhost:3050",
+		"http://localhost:3051",
+		"http://localhost:3052",
+	}
+	adminEmail := strings.ToLower(strings.TrimSpace(getEnv("ADMIN_EMAIL", "admin@konvoq.local")))
+	adminPassword := getEnv("ADMIN_PASSWORD", "change-me-admin-password")
+	isProd := isProductionEnvironment(environment)
+	corsAllowedOrigins := getEnvList("CORS_ALLOWED_ORIGINS", defaultCORSOrigins)
+
+	if isProd {
+		if len(corsAllowedOrigins) == 0 {
+			panic("CORS_ALLOWED_ORIGINS must be configured in production")
+		}
+		for _, origin := range corsAllowedOrigins {
+			if strings.TrimSpace(origin) == "*" {
+				panic("wildcard CORS is not allowed in production")
+			}
+		}
+		if adminEmail == "" || adminEmail == "admin@konvoq.local" {
+			panic("ADMIN_EMAIL must be explicitly configured in production")
+		}
+		if strings.TrimSpace(adminPassword) == "" || adminPassword == "change-me-admin-password" {
+			panic("ADMIN_PASSWORD must be explicitly configured in production")
+		}
+		if !isBcryptHash(adminPassword) {
+			panic("ADMIN_PASSWORD must be a bcrypt hash in production")
+		}
+	}
 
 	return Config{
-		Environment: environment,
-		ServiceName: getEnv("SERVICE_NAME", "konvoq-backend"),
+		Environment:  environment,
+		IsProduction: isProd,
+		ServiceName:  getEnv("SERVICE_NAME", "konvoq-backend"),
 
 		Port:   getEnv("PORT", "8080"),
 		DBURL:  dbURL,
@@ -182,8 +246,8 @@ func Load() Config {
 		RefreshTokenDays:    getEnvInt("REFRESH_TOKEN_EXPIRY_DAYS", 7),
 		VerifyCodeMinutes:   getEnvInt("VERIFICATION_CODE_EXPIRY_MINUTES", 10),
 		MaxVerifyAttempts:   getEnvInt("MAX_VERIFICATION_ATTEMPTS", 5),
-		AdminEmail:          getEnv("ADMIN_EMAIL", "admin@konvoq.local"),
-		AdminPassword:       getEnv("ADMIN_PASSWORD", "change-me-admin-password"),
+		AdminEmail:          adminEmail,
+		AdminPassword:       adminPassword,
 		EnableAutoMigration: getEnvBool("AUTO_MIGRATE", false),
 
 		OpenAIAPIKey: getEnv("OPENAI_API_KEY", ""),
@@ -201,6 +265,10 @@ func Load() Config {
 		EmailPassword: getEnv("EMAIL_PASSWORD", ""),
 		EmailFrom:     getEnv("EMAIL_FROM", getEnv("EMAIL_FROM_ADDRESS", "noreply@konvoq.ai")),
 
+		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
+		GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", ""),
+
 		WebhookProcessIntervalSec: getEnvInt("WEBHOOK_PROCESS_INTERVAL_SEC", 30),
 		AnalyticsFlushIntervalSec: getEnvInt("ANALYTICS_FLUSH_INTERVAL_SEC", 60),
 
@@ -209,7 +277,10 @@ func Load() Config {
 		LogAddSource: getEnvBool("LOG_ADD_SOURCE", false),
 		LogColor:     getEnvBool("LOG_COLOR", defaultLogColor),
 
-		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{"*"}),
+		CORSAllowedOrigins:   corsAllowedOrigins,
+		AuthIncludeDevCode:   getEnvBool("AUTH_INCLUDE_DEV_CODE", false),
+		ExposeDetailedHealth: getEnvBool("EXPOSE_DETAILED_HEALTH", false),
+		ExposeMetrics:        getEnvBool("EXPOSE_METRICS", false),
 	}
 }
 

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -22,7 +23,32 @@ func (c *Controller) Chat(w http.ResponseWriter, r *http.Request, claims TokenCl
 	}
 	var used int
 	var limit sql.NullInt64
-	err := c.db.QueryRow(`UPDATE users SET conversations_used=conversations_used+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND (conversations_limit IS NULL OR conversations_used < conversations_limit) RETURNING conversations_used,conversations_limit`,
+	var err error
+	convID := strings.TrimSpace(body.SessionID)
+	if convID == "" {
+		err = c.db.QueryRow(`INSERT INTO chat_conversations (user_id,status,last_message_preview,last_message_at) VALUES ($1,'active',$2,CURRENT_TIMESTAMP) RETURNING id`,
+			claims.UserID, body.Message).Scan(&convID)
+	} else {
+		err = c.db.QueryRow(`INSERT INTO chat_conversations (id,user_id,status,last_message_preview,last_message_at)
+			VALUES ($1,$2,'active',$3,CURRENT_TIMESTAMP)
+			ON CONFLICT (id) DO UPDATE SET
+				last_message_preview=EXCLUDED.last_message_preview,
+				last_message_at=CURRENT_TIMESTAMP,
+				updated_at=CURRENT_TIMESTAMP
+			WHERE chat_conversations.user_id=EXCLUDED.user_id AND chat_conversations.is_deleted=FALSE
+			RETURNING id`,
+			convID, claims.UserID, body.Message).Scan(&convID)
+		if errors.Is(err, sql.ErrNoRows) {
+			utils.JSONErr(w, http.StatusNotFound, "chat session not found")
+			return
+		}
+	}
+	if err != nil {
+		c.logRequestError(r, "chat conversation create/update failed", err, "user_id", claims.UserID, "session_id", convID)
+		utils.JSONErr(w, http.StatusInternalServerError, "failed to create conversation")
+		return
+	}
+	err = c.db.QueryRow(`UPDATE users SET conversations_used=conversations_used+1,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND (conversations_limit IS NULL OR conversations_used < conversations_limit) RETURNING conversations_used,conversations_limit`,
 		claims.UserID).Scan(&used, &limit)
 	if err == sql.ErrNoRows {
 		utils.JSONErr(w, http.StatusPaymentRequired, "conversation limit reached")
@@ -31,19 +57,6 @@ func (c *Controller) Chat(w http.ResponseWriter, r *http.Request, claims TokenCl
 	if err != nil {
 		c.logRequestError(r, "chat usage update failed", err, "user_id", claims.UserID)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")
-		return
-	}
-	convID := strings.TrimSpace(body.SessionID)
-	if convID == "" {
-		err = c.db.QueryRow(`INSERT INTO chat_conversations (user_id,status,last_message_preview,last_message_at) VALUES ($1,'active',$2,CURRENT_TIMESTAMP) RETURNING id`,
-			claims.UserID, body.Message).Scan(&convID)
-	} else {
-		_, err = c.db.Exec(`INSERT INTO chat_conversations (id,user_id,status,last_message_preview,last_message_at) VALUES ($1,$2,'active',$3,CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET last_message_preview=EXCLUDED.last_message_preview,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`,
-			convID, claims.UserID, body.Message)
-	}
-	if err != nil {
-		c.logRequestError(r, "chat conversation create/update failed", err, "user_id", claims.UserID, "session_id", convID)
-		utils.JSONErr(w, http.StatusInternalServerError, "failed to create conversation")
 		return
 	}
 	answer := "I don't have information about that. Please contact support."
@@ -60,12 +73,22 @@ func (c *Controller) Chat(w http.ResponseWriter, r *http.Request, claims TokenCl
 			}
 		}
 	}
-	if _, err := c.db.Exec(`INSERT INTO chat_messages (conversation_id,user_id,role,content,metadata) VALUES ($1,$2,'user',$3,'{}'::jsonb),($1,$2,'assistant',$4,'{}'::jsonb)`,
-		convID, claims.UserID, body.Message, answer); err != nil {
+	insertResult, err := c.db.Exec(`INSERT INTO chat_messages (conversation_id,user_id,role,content,metadata)
+		SELECT c.id,$2,v.role,v.content,'{}'::jsonb
+		FROM chat_conversations c
+		JOIN (VALUES ('user'::varchar,$3),('assistant'::varchar,$4)) AS v(role,content) ON TRUE
+		WHERE c.id=$1 AND c.user_id=$2 AND c.is_deleted=FALSE`,
+		convID, claims.UserID, body.Message, answer)
+	if err != nil {
 		c.logRequestWarn(r, "chat message insert failed", err, "user_id", claims.UserID, "session_id", convID)
+	} else if rows, rowsErr := insertResult.RowsAffected(); rowsErr == nil && rows != 2 {
+		c.requestLogger(r).Warn("chat message insert skipped due to session ownership mismatch",
+			"user_id", claims.UserID, "session_id", convID, "rows_affected", rows)
+		utils.JSONErr(w, http.StatusNotFound, "chat session not found")
+		return
 	}
-	if _, err := c.db.Exec(`UPDATE chat_conversations SET message_count=message_count+2,last_message_preview=$2,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
-		convID, body.Message); err != nil {
+	if _, err := c.db.Exec(`UPDATE chat_conversations SET message_count=message_count+2,last_message_preview=$2,last_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND user_id=$3 AND is_deleted=FALSE`,
+		convID, body.Message, claims.UserID); err != nil {
 		c.logRequestWarn(r, "chat conversation metadata update failed", err, "user_id", claims.UserID, "session_id", convID)
 	}
 	utils.JSONOK(w, map[string]interface{}{"success": true, "sessionId": convID, "response": answer, "usage": map[string]interface{}{"conversationsUsed": used, "conversationsLimit": utils.NullableInt64(limit)}})
@@ -111,7 +134,11 @@ func (c *Controller) ChatSession(w http.ResponseWriter, r *http.Request, claims 
 		utils.JSONErr(w, http.StatusNotFound, "chat session not found")
 		return
 	}
-	rows, err := c.db.Query(`SELECT role,content,created_at FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at ASC,id ASC`, sid)
+	rows, err := c.db.Query(`SELECT m.role,m.content,m.created_at
+		FROM chat_messages m
+		JOIN chat_conversations c ON c.id=m.conversation_id
+		WHERE m.conversation_id=$1 AND c.user_id=$2 AND c.is_deleted=FALSE
+		ORDER BY m.created_at ASC,m.id ASC`, sid, claims.UserID)
 	if err != nil {
 		c.logRequestError(r, "chat session messages query failed", err, "user_id", claims.UserID, "session_id", sid)
 		utils.JSONErr(w, http.StatusInternalServerError, "db error")

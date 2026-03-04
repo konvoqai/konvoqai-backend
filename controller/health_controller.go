@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"konvoq-backend/utils"
@@ -21,6 +23,10 @@ func (c *Controller) Health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (c *Controller) HealthDetailed(w http.ResponseWriter, r *http.Request) {
+	if !c.cfg.ExposeDetailedHealth && c.cfg.IsProduction && !isLocalRequest(r) {
+		utils.JSONErr(w, http.StatusNotFound, "not found")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	dbStatus := "healthy"
@@ -65,6 +71,10 @@ func (c *Controller) Live(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (c *Controller) Metrics(w http.ResponseWriter, r *http.Request) {
+	if !c.cfg.ExposeMetrics && c.cfg.IsProduction && !isLocalRequest(r) {
+		utils.JSONErr(w, http.StatusNotFound, "not found")
+		return
+	}
 	var users, sessions int
 	if err := c.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users); err != nil {
 		c.logRequestWarn(r, "metrics users count failed", err)
@@ -74,4 +84,16 @@ func (c *Controller) Metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = w.Write([]byte(fmt.Sprintf("witzo_users_total %d\nwitzo_sessions_total %d\n", users, sessions)))
+}
+
+func isLocalRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }

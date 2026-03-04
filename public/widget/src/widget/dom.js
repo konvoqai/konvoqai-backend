@@ -79,13 +79,20 @@ export function renderHeaderIcon(container, logoIconURL) {
 		return;
 	}
 
+	container.replaceChildren();
 	const safeLogoURL = sanitizeURL(logoIconURL);
 	if (safeLogoURL) {
-		container.innerHTML = `<img id="logoIcon" src="${safeLogoURL}" alt="Widget logo" />`;
+		const img = document.createElement("img");
+		img.id = "logoIcon";
+		img.alt = "Widget logo";
+		img.src = safeLogoURL;
+		container.appendChild(img);
 		return;
 	}
 
-	container.innerHTML = DEFAULT_ICON;
+	const template = document.createElement("template");
+	template.innerHTML = DEFAULT_ICON.trim();
+	container.appendChild(template.content.cloneNode(true));
 }
 
 export function populateLanguageOptions(selectElement, languages, selectedLanguage) {
@@ -93,12 +100,14 @@ export function populateLanguageOptions(selectElement, languages, selectedLangua
 		return;
 	}
 
-	selectElement.innerHTML = languages
-		.map((language) => {
-			const selected = language.code === selectedLanguage ? " selected" : "";
-			return `<option value="${language.code}"${selected}>${language.label}</option>`;
-		})
-		.join("");
+	selectElement.replaceChildren();
+	languages.forEach((language) => {
+		const option = document.createElement("option");
+		option.value = String(language.code || "");
+		option.textContent = String(language.label || language.code || "");
+		option.selected = language.code === selectedLanguage;
+		selectElement.appendChild(option);
+	});
 }
 
 export function setInputMaxLength(input, maxLength) {
