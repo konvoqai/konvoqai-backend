@@ -28,9 +28,9 @@ func (c *Controller) sendVerificationEmail(email, code string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
-	subject := "Your Witzo Verification Code"
+	subject := "Your Konvoq AI Verification Code"
 	html := buildVerificationEmailHTML(code, c.cfg.VerifyCodeMinutes)
-	text := fmt.Sprintf("Witzo AI - Verify Your Email\n\nYour verification code is: %s\nThis code expires in %d minutes.\n\nIf you did not request this code, please ignore this email.", code, c.cfg.VerifyCodeMinutes)
+	text := fmt.Sprintf("Konvoq AI - Verify Your Email\n\nYour verification code is: %s\nThis code expires in %d minutes.\n\nIf you did not request this code, please ignore this email.", code, c.cfg.VerifyCodeMinutes)
 	c.sendEmail(email, subject, html, text)
 }
 
@@ -38,7 +38,7 @@ func (c *Controller) sendWelcomeEmail(email string) {
 	if strings.TrimSpace(c.cfg.EmailHost) == "" || strings.TrimSpace(c.cfg.EmailUser) == "" {
 		return
 	}
-	subject := "Welcome to Witzo AI"
+	subject := "Welcome to Konvoq AI"
 	html := buildWelcomeEmailHTML(email)
 	text := buildWelcomeEmailText(email)
 	c.sendEmail(email, subject, html, text)
@@ -50,7 +50,7 @@ func (c *Controller) sendFollowUpEmail(visitorEmail, visitorName, widgetOwnerNam
 	}
 	from := strings.TrimSpace(widgetOwnerName)
 	if from == "" {
-		from = "Witzo"
+		from = "Konvoq AI"
 	}
 	subject := "Thanks for chatting with " + from + "!"
 	html := buildFollowUpEmailHTML(visitorName, from)
@@ -93,159 +93,184 @@ func (c *Controller) sendEmail(to, subject, htmlBody, textBody string) {
 	}()
 }
 
-func buildVerificationEmailHTML(code string, expiryMinutes int) string {
+const (
+	emailBrandName = "Konvoq AI"
+	emailBrandURL  = "https://konvoq.ai"
+)
+
+var emailHTMLReplacer = strings.NewReplacer(
+	"&", "&amp;",
+	"<", "&lt;",
+	">", "&gt;",
+	`"`, "&quot;",
+	"'", "&#39;",
+)
+
+func escapeEmailHTML(value string) string {
+	return emailHTMLReplacer.Replace(value)
+}
+
+func buildEmailLayoutHTML(title, preheader, headline, subheadline, contentHTML, footerHTML string) string {
 	return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Your Verification Code</title>
+    <title>` + escapeEmailHTML(title) + `</title>
   </head>
-  <body style="margin:0;padding:0;background:#f3f7fb;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#10263d;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f7fb;padding:24px 12px;">
-      <tr><td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:620px;background:#ffffff;border-radius:20px;overflow:hidden;box-shadow:0 16px 40px rgba(16,38,61,0.12);">
-          <tr><td style="padding:0;background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 45%,#0ea5e9 100%);">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-              <tr><td style="padding:28px 28px 20px 28px;">
-                <div style="font-size:14px;letter-spacing:2px;text-transform:uppercase;color:#cde8ff;font-weight:600;">Witzo AI</div>
-                <h1 style="margin:10px 0 0 0;font-size:28px;line-height:1.2;color:#ffffff;font-weight:700;">Verify Your Email</h1>
-                <p style="margin:12px 0 0 0;color:#d7ebff;font-size:15px;line-height:1.55;">Use the one-time code below to continue securely.</p>
-              </td></tr>
-            </table>
-          </td></tr>
-          <tr><td style="padding:28px 28px 10px 28px;">
-            <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#324b64;">Enter this verification code in the login window:</p>
-            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#f8fbff;border:1px solid #d7e8f8;border-radius:14px;">
-              <tr><td align="center" style="padding:22px 12px;">
-                <div style="font-size:36px;letter-spacing:10px;font-weight:800;color:#0b4a8f;">` + code + `</div>
-              </td></tr>
-            </table>
-            <p style="margin:16px 0 0 0;font-size:14px;line-height:1.6;color:#4f6a84;">This code expires in <strong>` + fmt.Sprintf("%d", expiryMinutes) + ` minutes</strong>.</p>
-            <p style="margin:8px 0 0 0;font-size:14px;line-height:1.6;color:#4f6a84;">If you did not request this, you can safely ignore this email.</p>
-          </td></tr>
-          <tr><td style="padding:18px 28px 28px 28px;">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-top:1px solid #e4edf6;padding-top:14px;">
-              <tr><td style="font-size:12px;line-height:1.6;color:#7b91a8;">This is an automated security message from Witzo AI. Please do not reply to this email.</td></tr>
-            </table>
-          </td></tr>
-        </table>
-      </td></tr>
+  <body style="margin:0;padding:0;background:#f4f4f5;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#111111;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">` + escapeEmailHTML(preheader) + `</div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f4f5;padding:20px 10px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border:1px solid #111111;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="background:#0b0b0b;padding:24px 28px;">
+                <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#ffffff;font-weight:700;">` + strings.ToUpper(emailBrandName) + `</div>
+                <h1 style="margin:10px 0 0 0;font-size:30px;line-height:1.2;color:#ffffff;font-weight:700;">` + escapeEmailHTML(headline) + `</h1>
+                <p style="margin:10px 0 0 0;font-size:15px;line-height:1.6;color:#d4d4d8;">` + escapeEmailHTML(subheadline) + `</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px;">
+                ` + contentHTML + `
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 28px 28px 28px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-top:1px solid #e4e4e7;">
+                  <tr>
+                    <td style="padding-top:14px;font-size:12px;line-height:1.7;color:#52525b;">
+                      ` + footerHTML + `
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
     </table>
   </body>
 </html>`
 }
 
+func buildVerificationEmailHTML(code string, expiryMinutes int) string {
+	contentHTML := `<p style="margin:0 0 16px 0;font-size:15px;line-height:1.7;color:#27272a;">Use this one-time verification code in the login window:</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #d4d4d8;border-radius:12px;background:#fafafa;">
+  <tr>
+    <td align="center" style="padding:20px 10px;">
+      <div style="display:inline-block;background:#111111;color:#ffffff;font-size:34px;letter-spacing:10px;font-weight:800;padding:10px 18px;border-radius:8px;">` + escapeEmailHTML(code) + `</div>
+    </td>
+  </tr>
+</table>
+<p style="margin:16px 0 0 0;font-size:14px;line-height:1.7;color:#3f3f46;">This code expires in <strong>` + fmt.Sprintf("%d", expiryMinutes) + ` minutes</strong>.</p>
+<p style="margin:8px 0 0 0;font-size:14px;line-height:1.7;color:#3f3f46;">If you did not request this code, you can safely ignore this email.</p>`
+
+	footerHTML := `This is an automated security message from ` + emailBrandName + `. Please do not reply to this email.`
+
+	return buildEmailLayoutHTML(
+		"Your Verification Code",
+		"Your Konvoq AI verification code is ready.",
+		"Verify Your Email",
+		"Use the one-time code below to continue securely.",
+		contentHTML,
+		footerHTML,
+	)
+}
+
 func buildWelcomeEmailHTML(email string) string {
-	displayName := displayNameFromEmail(email)
-	return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Welcome to Witzo AI</title>
-  </head>
-  <body style="margin:0;padding:0;background:#f3f6fb;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#0f2238;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f6fb;padding:24px 12px;">
-      <tr><td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border-radius:20px;overflow:hidden;box-shadow:0 16px 40px rgba(15,34,56,0.12);">
-          <tr><td style="background:linear-gradient(130deg,#0f172a 0%,#1d4ed8 45%,#22d3ee 100%);padding:30px 30px 26px 30px;">
-            <div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;color:#cae4ff;font-weight:700;">Witzo AI</div>
-            <h1 style="margin:10px 0 0 0;font-size:30px;line-height:1.2;color:#ffffff;font-weight:800;">Welcome aboard</h1>
-            <p style="margin:12px 0 0 0;color:#d7ecff;font-size:15px;line-height:1.6;">Your account is now active and ready to use.</p>
-          </td></tr>
-          <tr><td style="padding:28px 30px 8px 30px;">
-            <p style="margin:0;font-size:16px;line-height:1.7;color:#324a62;">Hi ` + displayName + `,</p>
-            <p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#4d657e;">
-              Thanks for signing up for Witzo AI. Your email has been verified successfully. You can now create your chatbot, connect data sources, and deploy your widget.
-            </p>
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0;background:#f8fbff;border:1px solid #d7e8f8;border-radius:14px;">
-              <tr><td style="padding:16px 18px;">
-                <p style="margin:0 0 8px 0;font-size:14px;font-weight:700;color:#0b4a8f;">Quick start</p>
-                <p style="margin:0;font-size:14px;line-height:1.7;color:#4d657e;">1. Add your website data source<br />2. Train your assistant<br />3. Copy and embed the widget code</p>
-              </td></tr>
-            </table>
-          </td></tr>
-          <tr><td style="padding:18px 30px 30px 30px;">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-top:1px solid #e4edf6;padding-top:14px;">
-              <tr><td style="font-size:12px;line-height:1.7;color:#7b91a8;">Need help? Reply to this email and our team will assist you.</td></tr>
-            </table>
-          </td></tr>
-        </table>
-      </td></tr>
-    </table>
-  </body>
-</html>`
+	displayName := escapeEmailHTML(displayNameFromEmail(email))
+	contentHTML := `<p style="margin:0;font-size:16px;line-height:1.7;color:#18181b;">Hi ` + displayName + `,</p>
+<p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#3f3f46;">
+  Thanks for signing up for ` + emailBrandName + `. Your email has been verified successfully.
+</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 0 0;border:1px solid #d4d4d8;border-radius:12px;background:#fafafa;">
+  <tr>
+    <td style="padding:16px 18px;">
+      <p style="margin:0 0 8px 0;font-size:14px;font-weight:700;color:#111111;">Quick start</p>
+      <p style="margin:0;font-size:14px;line-height:1.8;color:#3f3f46;">1. Add your website as a data source<br />2. Train your assistant<br />3. Embed the widget on your site</p>
+    </td>
+  </tr>
+</table>
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 0 0;">
+  <tr>
+    <td>
+      <a href="` + emailBrandURL + `" style="display:inline-block;background:#111111;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 18px;border-radius:10px;">Open Konvoq AI</a>
+    </td>
+  </tr>
+</table>`
+
+	footerHTML := `Need help? Reply to this email and our team will assist you.`
+
+	return buildEmailLayoutHTML(
+		"Welcome to Konvoq AI",
+		"Welcome to Konvoq AI. Your account is ready.",
+		"Welcome Aboard",
+		"Your account is active and ready to use.",
+		contentHTML,
+		footerHTML,
+	)
 }
 
 func buildWelcomeEmailText(email string) string {
 	displayName := displayNameFromEmail(email)
-	return "Welcome to Witzo AI\n\nHi " + displayName + ",\nYour account has been verified successfully.\n\nQuick start:\n1. Add your website data source\n2. Train your assistant\n3. Copy and embed the widget code\n\nNeed help? Reply to this email."
+	return "Welcome to Konvoq AI\n\nHi " + displayName + ",\nYour account has been verified successfully.\n\nQuick start:\n1. Add your website as a data source\n2. Train your assistant\n3. Embed the widget on your site\n\nOpen Konvoq AI: " + emailBrandURL + "\n\nNeed help? Reply to this email."
 }
 
 func buildFollowUpEmailHTML(visitorName, from string) string {
 	greeting := "Hi there"
 	if strings.TrimSpace(visitorName) != "" {
-		greeting = "Hi " + visitorName
+		greeting = "Hi " + strings.TrimSpace(visitorName)
 	}
-	return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Thanks for chatting!</title>
-  </head>
-  <body style="margin:0;padding:0;background:#f3f6fb;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#0f2238;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f6fb;padding:24px 12px;">
-      <tr><td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border-radius:20px;overflow:hidden;box-shadow:0 16px 40px rgba(15,34,56,0.12);">
-          <tr><td style="background:linear-gradient(130deg,#0f172a 0%,#1d4ed8 45%,#22d3ee 100%);padding:30px 30px 26px 30px;">
-            <div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;color:#cae4ff;font-weight:700;">` + from + `</div>
-            <h1 style="margin:10px 0 0 0;font-size:30px;line-height:1.2;color:#ffffff;font-weight:800;">Thanks for chatting!</h1>
-            <p style="margin:12px 0 0 0;color:#d7ecff;font-size:15px;line-height:1.6;">We appreciate you reaching out.</p>
-          </td></tr>
-          <tr><td style="padding:28px 30px 8px 30px;">
-            <p style="margin:0;font-size:16px;line-height:1.7;color:#324a62;">` + greeting + `,</p>
-            <p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#4d657e;">
-              Thank you for reaching out and chatting with us today. We hope we were able to help answer your questions.
-            </p>
-            <p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#4d657e;">
-              If you have any further questions or need additional assistance, please don't hesitate to get in touch.
-            </p>
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0;background:#f8fbff;border:1px solid #d7e8f8;border-radius:14px;">
-              <tr><td style="padding:16px 18px;">
-                <p style="margin:0;font-size:14px;line-height:1.7;color:#4d657e;">
-                  This email was sent because you recently chatted with <strong>` + from + `</strong>. If you didn't initiate this conversation, you can safely ignore this email.
-                </p>
-              </td></tr>
-            </table>
-          </td></tr>
-          <tr><td style="padding:18px 30px 30px 30px;">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-top:1px solid #e4edf6;padding-top:14px;">
-              <tr><td style="font-size:12px;line-height:1.7;color:#7b91a8;">
-                Powered by <a href="https://witzo.ai" style="color:#1d4ed8;text-decoration:none;">Witzo AI</a>
-              </td></tr>
-            </table>
-          </td></tr>
-        </table>
-      </td></tr>
-    </table>
-  </body>
-</html>`
+	fromSafe := escapeEmailHTML(from)
+	contentHTML := `<p style="margin:0;font-size:16px;line-height:1.7;color:#18181b;">` + escapeEmailHTML(greeting) + `,</p>
+<p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#3f3f46;">
+  Thank you for chatting with ` + fromSafe + `. We hope we were able to answer your questions.
+</p>
+<p style="margin:14px 0 0 0;font-size:15px;line-height:1.8;color:#3f3f46;">
+  If you need anything else, feel free to reach out anytime.
+</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 0 0;border:1px solid #d4d4d8;border-radius:12px;background:#fafafa;">
+  <tr>
+    <td style="padding:16px 18px;">
+      <p style="margin:0;font-size:14px;line-height:1.7;color:#3f3f46;">
+        This email was sent because you recently chatted with <strong>` + fromSafe + `</strong>. If this wasn't you, you can safely ignore this message.
+      </p>
+    </td>
+  </tr>
+</table>
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 0 0;">
+  <tr>
+    <td>
+      <a href="` + emailBrandURL + `" style="display:inline-block;background:#111111;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 18px;border-radius:10px;">Visit Konvoq AI</a>
+    </td>
+  </tr>
+</table>`
+
+	footerHTML := `Powered by <a href="` + emailBrandURL + `" style="color:#111111;text-decoration:underline;">` + emailBrandName + `</a>.`
+
+	return buildEmailLayoutHTML(
+		"Thanks for Chatting",
+		"Thanks for chatting with us.",
+		"Thanks for Chatting",
+		"We appreciate you reaching out.",
+		contentHTML,
+		footerHTML,
+	)
 }
 
 func buildFollowUpEmailText(visitorName, from string) string {
 	greeting := "Hi there"
 	if strings.TrimSpace(visitorName) != "" {
-		greeting = "Hi " + visitorName
+		greeting = "Hi " + strings.TrimSpace(visitorName)
 	}
 	return "Thanks for chatting with " + from + "!\n\n" +
 		greeting + ",\n\n" +
 		"Thank you for reaching out and chatting with us today. We hope we were able to help answer your questions.\n\n" +
 		"If you have any further questions or need additional assistance, please don't hesitate to get in touch.\n\n" +
-		"— " + from + "\n\nPowered by Witzo AI"
+		"- " + from + "\n\nPowered by Konvoq AI (" + emailBrandURL + ")"
 }
-
 func displayNameFromEmail(email string) string {
 	parts := strings.SplitN(email, "@", 2)
 	local := parts[0]
