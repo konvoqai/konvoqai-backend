@@ -82,6 +82,12 @@ func (a *App) admin(h http.HandlerFunc) http.HandlerFunc {
 	return middleware.WithAdmin(a.ctrl.ValidateAdminRequest, utils.JSONErr, h, a.logger)
 }
 
+func (a *App) adminRoles(h http.HandlerFunc, roles ...string) http.HandlerFunc {
+	return middleware.WithAdmin(func(r *http.Request) error {
+		return a.ctrl.ValidateAdminRequestForRoles(r, roles...)
+	}, utils.JSONErr, h, a.logger)
+}
+
 func (a *App) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.WithRequestLogger(a.logger))

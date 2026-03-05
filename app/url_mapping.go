@@ -133,12 +133,12 @@ func (a *App) mapFeedbackRoutes(r chi.Router) {
 // Admin
 func (a *App) mapAdminRoutes(r chi.Router) {
 	r.With(httprate.LimitByIP(10, 10*time.Minute)).Post("/login", a.ctrl.AdminLogin)
-	r.Get("/dashboard", a.admin(a.ctrl.AdminDashboard))
-	r.Get("/insights", a.admin(a.ctrl.AdminInsights))
-	r.Get("/users", a.admin(a.ctrl.AdminUsers))
-	r.Post("/actions/reset-usage", a.admin(a.ctrl.AdminResetUsage))
-	r.Post("/actions/force-logout", a.admin(a.ctrl.AdminForceLogout))
-	r.Post("/actions/set-plan", a.admin(a.ctrl.AdminSetPlan))
+	r.Get("/dashboard", a.adminRoles(a.ctrl.AdminDashboard, "super_admin", "admin", "support", "readonly"))
+	r.Get("/insights", a.adminRoles(a.ctrl.AdminInsights, "super_admin", "admin", "readonly"))
+	r.Get("/users", a.adminRoles(a.ctrl.AdminUsers, "super_admin", "admin", "support", "readonly"))
+	r.Post("/actions/reset-usage", a.adminRoles(a.ctrl.AdminResetUsage, "super_admin", "admin"))
+	r.Post("/actions/force-logout", a.adminRoles(a.ctrl.AdminForceLogout, "super_admin", "admin"))
+	r.Post("/actions/set-plan", a.adminRoles(a.ctrl.AdminSetPlan, "super_admin"))
 }
 
 // Public widget API (versioned, no auth)

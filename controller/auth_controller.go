@@ -15,6 +15,23 @@ import (
 	"konvoq-backend/utils"
 )
 
+type authStatusError struct {
+	status  int
+	message string
+}
+
+func (e authStatusError) Error() string {
+	return e.message
+}
+
+func (e authStatusError) StatusCode() int {
+	return e.status
+}
+
+func newAuthStatusError(status int, message string) error {
+	return authStatusError{status: status, message: message}
+}
+
 func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord, error) {
 	var emptyClaims TokenClaims
 	var emptyUser UserRecord
@@ -52,18 +69,71 @@ func (c *Controller) AuthenticateUser(r *http.Request) (TokenClaims, UserRecord,
 }
 
 func (c *Controller) ValidateAdminRequest(r *http.Request) error {
+	return c.ValidateAdminRequestForRoles(r)
+}
+
+func (c *Controller) ValidateAdminRequestForRoles(r *http.Request, allowedRoles ...string) error {
+	claims, err := c.parseAdminToken(r)
+	if err != nil {
+		return err
+	}
+
+	role, err := c.loadAdminRole(r.Context(), claims.AdminID)
+	if err != nil {
+		c.logRequestError(r, "admin role lookup failed", err, "admin_id", claims.AdminID)
+		if _, ok := err.(interface{ StatusCode() int }); ok {
+			return err
+		}
+		return newAuthStatusError(http.StatusInternalServerError, "admin authorization failed")
+	}
+	if !isAllowedAdminRole(role, allowedRoles) {
+		return newAuthStatusError(http.StatusForbidden, "admin access denied")
+	}
+	return nil
+}
+
+func (c *Controller) parseAdminToken(r *http.Request) (TokenClaims, error) {
+	var emptyClaims TokenClaims
 	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if raw == "" {
-		return errors.New("admin authentication required")
+		return emptyClaims, newAuthStatusError(http.StatusUnauthorized, "admin authentication required")
 	}
 	claims := &TokenClaims{}
 	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(c.cfg.AdminJWTSecret), nil
 	})
-	if err != nil || !token.Valid || claims.Type != "admin" {
-		return errors.New("invalid admin token")
+	if err != nil || !token.Valid || claims.Type != "admin" || strings.TrimSpace(claims.AdminID) == "" {
+		return emptyClaims, newAuthStatusError(http.StatusUnauthorized, "invalid admin token")
 	}
-	return nil
+	return *claims, nil
+}
+
+func (c *Controller) loadAdminRole(ctx context.Context, adminID string) (string, error) {
+	var role string
+	var isActive bool
+	err := c.db.QueryRowContext(ctx, `SELECT role, is_active FROM admin_users WHERE id=$1`, adminID).Scan(&role, &isActive)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", newAuthStatusError(http.StatusUnauthorized, "admin account not found")
+		}
+		return "", err
+	}
+	if !isActive {
+		return "", newAuthStatusError(http.StatusForbidden, "admin account is inactive")
+	}
+	return strings.ToLower(strings.TrimSpace(role)), nil
+}
+
+func isAllowedAdminRole(role string, allowedRoles []string) bool {
+	if len(allowedRoles) == 0 {
+		return true
+	}
+	for _, allowed := range allowedRoles {
+		if strings.EqualFold(strings.TrimSpace(allowed), role) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Controller) RequireCSRF(r *http.Request) error {

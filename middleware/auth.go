@@ -58,13 +58,20 @@ func WithAdmin(
 	authLogger := logger.With("component", "auth")
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := validate(r); err != nil {
+			status := http.StatusUnauthorized
+			type statusCoder interface {
+				StatusCode() int
+			}
+			if sc, ok := err.(statusCoder); ok && sc.StatusCode() > 0 {
+				status = sc.StatusCode()
+			}
 			authLogger.Warn("admin request validation failed",
 				"request_id", utils.RequestID(r.Context()),
 				"method", r.Method,
 				"path", r.URL.Path,
 				"error", err,
 			)
-			onError(w, http.StatusUnauthorized, err.Error())
+			onError(w, status, err.Error())
 			return
 		}
 		next(w, r)

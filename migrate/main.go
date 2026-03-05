@@ -18,16 +18,13 @@ import (
 )
 
 func main() {
-	if err := envx.LoadDotEnvOverrideIfPresent(".env"); err != nil {
-		slog.Error("failed to load .env", "error", err)
-		os.Exit(1)
-	}
+	_ = envx.LoadDotEnvIfPresent(".env")
 
 	logger := loggerFromEnv()
 	slog.SetDefault(logger)
 
 	dbURL := databaseURLFromEnv()
-	logger.Info("connecting database", "database_url", redactDatabaseURL(dbURL))
+	logger.Info("running migrations", "database_url", redactDatabaseURL(dbURL))
 
 	database, err := db.Open(dbURL)
 	if err != nil {
@@ -47,6 +44,20 @@ func main() {
 	logger.Info("database migrations completed")
 }
 
+func loggerFromEnv() *slog.Logger {
+	env := strings.ToLower(getenv("GO_ENV", getenv("NODE_ENV", "development")))
+	format := getenv("LOG_FORMAT", "text")
+	defaultLogColor := true
+	return applog.New(applog.Config{
+		Service:     getenv("SERVICE_NAME", "konvoq-migrate"),
+		Environment: env,
+		Level:       getenv("LOG_LEVEL", "info"),
+		Format:      format,
+		AddSource:   getenvBool("LOG_ADD_SOURCE", false),
+		Color:       getenvBool("LOG_COLOR", defaultLogColor),
+	})
+}
+
 func databaseURLFromEnv() string {
 	dbHost := getenv("DB_HOST", "localhost")
 	dbPort := getenvInt("DB_PORT", 5432)
@@ -63,48 +74,6 @@ func databaseURLFromEnv() string {
 	}
 
 	return buildDatabaseURL(dbHost, dbPort, dbName, dbUser, dbPass)
-}
-
-func getenv(key, fallback string) string {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	return strings.Trim(v, "\"")
-}
-
-func getenvInt(key string, fallback int) int {
-	v := getenv(key, "")
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func getenvBool(key string, fallback bool) bool {
-	v := strings.ToLower(getenv(key, ""))
-	if v == "" {
-		return fallback
-	}
-	return v == "1" || v == "true" || v == "yes" || v == "on"
-}
-
-func loggerFromEnv() *slog.Logger {
-	env := strings.ToLower(getenv("GO_ENV", getenv("NODE_ENV", "development")))
-	format := getenv("LOG_FORMAT", "text")
-	defaultLogColor := true
-	return applog.New(applog.Config{
-		Service:     getenv("SERVICE_NAME", "konvoq-migrate"),
-		Environment: env,
-		Level:       getenv("LOG_LEVEL", "info"),
-		Format:      format,
-		AddSource:   getenvBool("LOG_ADD_SOURCE", false),
-		Color:       getenvBool("LOG_COLOR", defaultLogColor),
-	})
 }
 
 func buildDatabaseURL(host string, port int, dbName, user, pass string) string {
@@ -152,6 +121,34 @@ func redactDatabaseURL(dbURL string) string {
 		u.User = neturl.UserPassword(username, "****")
 	}
 	return u.String()
+}
+
+func getenv(key, fallback string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	return strings.Trim(v, "\"")
+}
+
+func getenvInt(key string, fallback int) int {
+	v := getenv(key, "")
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.ToLower(getenv(key, ""))
+	if v == "" {
+		return fallback
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 func isLocalHost(host string) bool {

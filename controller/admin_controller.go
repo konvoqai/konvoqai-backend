@@ -1,8 +1,9 @@
 package controller
 
 import (
-	"crypto/subtle"
+	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -23,23 +24,79 @@ func (c *Controller) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inputEmail := strings.ToLower(strings.TrimSpace(body.Email))
-	if c.cfg.IsProduction && !adminPasswordIsBcrypt(c.cfg.AdminPassword) {
+	inputPassword := strings.TrimSpace(body.Password)
+	if inputEmail == "" || inputPassword == "" {
+		utils.JSONErr(w, http.StatusBadRequest, "email and password are required")
+		return
+	}
+
+	if err := c.ensureBootstrapAdmin(r.Context()); err != nil {
+		c.logRequestError(r, "admin bootstrap setup failed", err)
 		utils.JSONErr(w, http.StatusServiceUnavailable, "admin authentication is misconfigured")
 		return
 	}
-	if !adminPasswordOK(c.cfg.AdminPassword, body.Password) || subtle.ConstantTimeCompare([]byte(inputEmail), []byte(strings.ToLower(strings.TrimSpace(c.cfg.AdminEmail)))) != 1 {
+
+	var adminID, adminEmail, adminPasswordHash, adminRole string
+	var isActive bool
+	err := c.db.QueryRowContext(r.Context(), `SELECT id, email, password_hash, role, is_active FROM admin_users WHERE email=$1`, inputEmail).
+		Scan(&adminID, &adminEmail, &adminPasswordHash, &adminRole, &isActive)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			c.logRequestError(r, "admin login lookup failed", err, "email", inputEmail)
+		}
 		utils.JSONErr(w, http.StatusUnauthorized, "invalid admin credentials")
 		return
 	}
+
+	if !isActive {
+		utils.JSONErr(w, http.StatusForbidden, "admin account is inactive")
+		return
+	}
+	if !adminPasswordIsBcrypt(adminPasswordHash) {
+		c.logRequestError(r, "admin login hash format invalid", errors.New("password hash must use bcrypt"), "admin_id", adminID)
+		utils.JSONErr(w, http.StatusServiceUnavailable, "admin authentication is misconfigured")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(adminPasswordHash), []byte(inputPassword)) != nil {
+		utils.JSONErr(w, http.StatusUnauthorized, "invalid admin credentials")
+		return
+	}
+
+	expiryHours := c.cfg.AdminTokenExpiryHours
+	if expiryHours <= 0 {
+		expiryHours = 24
+	}
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, TokenClaims{
-		Type: "admin",
+		Type:      "admin",
+		AdminID:   adminID,
+		AdminRole: strings.ToLower(strings.TrimSpace(adminRole)),
+		Email:     adminEmail,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiryHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	})
-	s, _ := token.SignedString([]byte(c.cfg.AdminJWTSecret))
-	utils.JSONOK(w, map[string]interface{}{"success": true, "token": s})
+	signedToken, err := token.SignedString([]byte(c.cfg.AdminJWTSecret))
+	if err != nil {
+		c.logRequestError(r, "admin login token signing failed", err, "admin_id", adminID)
+		utils.JSONErr(w, http.StatusInternalServerError, "admin authentication failed")
+		return
+	}
+
+	if _, err := c.db.ExecContext(r.Context(), `UPDATE admin_users SET last_login=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`, adminID); err != nil {
+		c.logRequestWarn(r, "admin login last_login update failed", err, "admin_id", adminID)
+	}
+
+	utils.JSONOK(w, map[string]interface{}{
+		"success": true,
+		"token":   signedToken,
+		"admin": map[string]interface{}{
+			"id":    adminID,
+			"email": adminEmail,
+			"role":  strings.ToLower(strings.TrimSpace(adminRole)),
+		},
+	})
 }
 
 func (c *Controller) AdminDashboard(w http.ResponseWriter, r *http.Request) {
@@ -137,23 +194,47 @@ func (c *Controller) AdminForceLogout(w http.ResponseWriter, r *http.Request) {
 	utils.JSONOK(w, map[string]interface{}{"success": true})
 }
 
-// adminPasswordOK compares the stored admin password with the provided one.
-// If the stored value is a bcrypt hash (starts with $2a$/$2b$/$2y$), bcrypt
-// comparison is used. Otherwise, a constant-time string comparison is used so
-// that plaintext configs are still accepted while preventing timing attacks.
-// New deployments should store a bcrypt hash:
-//
-//	htpasswd -bnBC 10 "" mypassword | tr -d ':\n'
-func adminPasswordOK(stored, provided string) bool {
-	if strings.HasPrefix(stored, "$2a$") || strings.HasPrefix(stored, "$2b$") || strings.HasPrefix(stored, "$2y$") {
-		return bcrypt.CompareHashAndPassword([]byte(stored), []byte(provided)) == nil
-	}
-	return subtle.ConstantTimeCompare([]byte(stored), []byte(provided)) == 1
-}
-
 func adminPasswordIsBcrypt(stored string) bool {
 	v := strings.TrimSpace(stored)
 	return strings.HasPrefix(v, "$2a$") || strings.HasPrefix(v, "$2b$") || strings.HasPrefix(v, "$2y$")
+}
+
+func normalizeAdminRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "super_admin", "admin", "support", "readonly":
+		return strings.ToLower(strings.TrimSpace(role))
+	default:
+		return "super_admin"
+	}
+}
+
+func (c *Controller) ensureBootstrapAdmin(ctx context.Context) error {
+	email := strings.ToLower(strings.TrimSpace(c.cfg.AdminBootstrapEmail))
+	password := strings.TrimSpace(c.cfg.AdminBootstrapPassword)
+	if email == "" || password == "" {
+		return nil
+	}
+
+	hash := password
+	if !adminPasswordIsBcrypt(hash) {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		hash = string(hashed)
+	}
+
+	_, err := c.db.ExecContext(ctx, `
+		WITH existing_admins AS (
+			SELECT COUNT(*) AS total FROM admin_users
+		)
+		INSERT INTO admin_users (email, password_hash, role, is_active)
+		SELECT $1, $2, $3, TRUE
+		FROM existing_admins
+		WHERE total = 0
+		ON CONFLICT (email) DO NOTHING
+	`, email, hash, normalizeAdminRole(c.cfg.AdminBootstrapRole))
+	return err
 }
 
 func (c *Controller) AdminSetPlan(w http.ResponseWriter, r *http.Request) {

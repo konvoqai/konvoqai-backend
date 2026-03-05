@@ -35,13 +35,15 @@ type Config struct {
 	AdminJWTSecret   string
 	CookieSecret     string
 
-	AccessTokenMinutes  int
-	RefreshTokenDays    int
-	VerifyCodeMinutes   int
-	MaxVerifyAttempts   int
-	AdminEmail          string
-	AdminPassword       string
-	EnableAutoMigration bool
+	AccessTokenMinutes     int
+	RefreshTokenDays       int
+	VerifyCodeMinutes      int
+	MaxVerifyAttempts      int
+	AdminTokenExpiryHours  int
+	AdminBootstrapEmail    string
+	AdminBootstrapPassword string
+	AdminBootstrapRole     string
+	EnableAutoMigration    bool
 
 	OpenAIAPIKey string
 	OpenAIModel  string
@@ -154,6 +156,15 @@ func isBcryptHash(value string) bool {
 	return strings.HasPrefix(v, "$2a$") || strings.HasPrefix(v, "$2b$") || strings.HasPrefix(v, "$2y$")
 }
 
+func isValidAdminRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "super_admin", "admin", "support", "readonly":
+		return true
+	default:
+		return false
+	}
+}
+
 func requireSecret(key string) string {
 	v := getEnv(key, "")
 	if v != "" {
@@ -195,8 +206,12 @@ func Load() Config {
 		"http://localhost:3051",
 		"http://localhost:3052",
 	}
-	adminEmail := strings.ToLower(strings.TrimSpace(getEnv("ADMIN_EMAIL", "admin@konvoq.local")))
-	adminPassword := getEnv("ADMIN_PASSWORD", "change-me-admin-password")
+	adminBootstrapEmail := strings.ToLower(strings.TrimSpace(getEnv("ADMIN_EMAIL", "")))
+	adminBootstrapPassword := strings.TrimSpace(getEnv("ADMIN_PASSWORD", ""))
+	adminBootstrapRole := strings.ToLower(strings.TrimSpace(getEnv("ADMIN_BOOTSTRAP_ROLE", "super_admin")))
+	if !isValidAdminRole(adminBootstrapRole) {
+		adminBootstrapRole = "super_admin"
+	}
 	isProd := isProductionEnvironment(environment)
 	corsAllowedOrigins := getEnvList("CORS_ALLOWED_ORIGINS", defaultCORSOrigins)
 
@@ -209,14 +224,16 @@ func Load() Config {
 				panic("wildcard CORS is not allowed in production")
 			}
 		}
-		if adminEmail == "" || adminEmail == "admin@konvoq.local" {
-			panic("ADMIN_EMAIL must be explicitly configured in production")
+		if adminBootstrapEmail == "" && adminBootstrapPassword != "" {
+			panic("ADMIN_EMAIL is required when ADMIN_PASSWORD is configured in production")
 		}
-		if strings.TrimSpace(adminPassword) == "" || adminPassword == "change-me-admin-password" {
-			panic("ADMIN_PASSWORD must be explicitly configured in production")
-		}
-		if !isBcryptHash(adminPassword) {
-			panic("ADMIN_PASSWORD must be a bcrypt hash in production")
+		if adminBootstrapEmail != "" {
+			if adminBootstrapPassword == "" {
+				panic("ADMIN_PASSWORD is required when ADMIN_EMAIL is configured in production")
+			}
+			if !isBcryptHash(adminBootstrapPassword) {
+				panic("ADMIN_PASSWORD must be a bcrypt hash in production when ADMIN_EMAIL is set")
+			}
 		}
 	}
 
@@ -242,13 +259,15 @@ func Load() Config {
 		AdminJWTSecret:   requireSecret("ADMIN_JWT_SECRET"),
 		CookieSecret:     requireSecret("COOKIE_SECRET"),
 
-		AccessTokenMinutes:  getEnvInt("ACCESS_TOKEN_EXPIRY_MINUTES", 15),
-		RefreshTokenDays:    getEnvInt("REFRESH_TOKEN_EXPIRY_DAYS", 7),
-		VerifyCodeMinutes:   getEnvInt("VERIFICATION_CODE_EXPIRY_MINUTES", 10),
-		MaxVerifyAttempts:   getEnvInt("MAX_VERIFICATION_ATTEMPTS", 5),
-		AdminEmail:          adminEmail,
-		AdminPassword:       adminPassword,
-		EnableAutoMigration: getEnvBool("AUTO_MIGRATE", false),
+		AccessTokenMinutes:     getEnvInt("ACCESS_TOKEN_EXPIRY_MINUTES", 15),
+		RefreshTokenDays:       getEnvInt("REFRESH_TOKEN_EXPIRY_DAYS", 7),
+		VerifyCodeMinutes:      getEnvInt("VERIFICATION_CODE_EXPIRY_MINUTES", 10),
+		MaxVerifyAttempts:      getEnvInt("MAX_VERIFICATION_ATTEMPTS", 5),
+		AdminTokenExpiryHours:  getEnvInt("ADMIN_TOKEN_EXPIRY_HOURS", 24),
+		AdminBootstrapEmail:    adminBootstrapEmail,
+		AdminBootstrapPassword: adminBootstrapPassword,
+		AdminBootstrapRole:     adminBootstrapRole,
+		EnableAutoMigration:    getEnvBool("AUTO_MIGRATE", false),
 
 		OpenAIAPIKey: getEnv("OPENAI_API_KEY", ""),
 		OpenAIModel:  getEnv("OPENAI_MODEL", "gpt-4o-mini"),

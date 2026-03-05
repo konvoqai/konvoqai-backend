@@ -34,12 +34,12 @@ cd d:\vivek-aa\konvoqai-backend
 go run ./migrate
 ```
 
-`go run ./migrate` auto-loads `.env` from project root, so no `$env:` command is needed for normal local usage.
+This runs pending SQL files from `migrations/sql` and records them in `schema_migrations`.
 
 ## Notes
 
-- Runs DB migrations from `migrations/sql` with `go run ./migrate`.
-- Optional startup migration: set `AUTO_MIGRATE=true` to run migrations on server start.
+- Runs DB migrations from `migrations/sql`.
+- Manual run: `go run ./migrate`.
 - Route groups implemented: `/api/auth`, `/api/admin`, `/api/v1`, plus health routes.
 - CSRF flow is implemented using Redis (`/api/auth/csrf-token` + `X-CSRF-Token` header).
 - Auth/session, usage, chat storage, widget, leads, feedback, and admin endpoints use PostgreSQL.
@@ -50,7 +50,9 @@ go run ./migrate
   - `LOG_ADD_SOURCE` (`true`/`false`)
   - `LOG_COLOR` (`true`/`false`, default `true`)
   - `SERVICE_NAME` (log field for service identity)
-- Default admin credentials come from env:
-  - `ADMIN_EMAIL` (default `admin@konvoq.local`)
-  - `ADMIN_PASSWORD` (default `change-me-admin-password`)
+- Admin auth is DB-backed via `admin_users` (RBAC roles).
+- Optional bootstrap env for first admin account (only used when `admin_users` is empty):
+  - `ADMIN_EMAIL`
+  - `ADMIN_PASSWORD` (bcrypt hash recommended; required hash in production)
+  - `ADMIN_BOOTSTRAP_ROLE` (`super_admin` | `admin` | `support` | `readonly`)
 

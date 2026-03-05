@@ -50,6 +50,8 @@ type TokenClaims struct {
 	UserID    string `json:"user_id"`
 	Email     string `json:"email"`
 	SessionID int64  `json:"session_id"`
+	AdminID   string `json:"admin_id,omitempty"`
+	AdminRole string `json:"admin_role,omitempty"`
 	Type      string `json:"type"`
 	jwt.RegisteredClaims
 }
