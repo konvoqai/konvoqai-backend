@@ -64,6 +64,7 @@ func (a *App) mapMeRoutes(r chi.Router) {
 
 // Scraper
 func (a *App) mapScraperRoutes(r chi.Router) {
+	r.Get("/brand-extract", a.auth(a.ctrl.BrandExtract))
 	r.Get("/sources", a.auth(a.ctrl.GetSources))
 	r.Get("/stats", a.auth(a.ctrl.SourceStats))
 	r.Get("/jobs/{id}", a.auth(a.ctrl.GetScrapeJob))
@@ -143,6 +144,7 @@ func (a *App) mapAdminRoutes(r chi.Router) {
 
 // Public widget API (versioned, no auth)
 func (a *App) mapPublicV1Routes(r chi.Router) {
+	r.Get("/widget/config/preview", a.ctrl.PublicWidgetPreviewConfig)
 	r.Get("/widget/config/{widgetKey}", a.ctrl.PublicWidgetConfig)
 	r.With(httprate.LimitByIP(300, time.Minute)).Post("/webhook", a.ctrl.PublicWebhook)
 	r.Get("/widget/embed.js", a.ctrl.EmbedJS)

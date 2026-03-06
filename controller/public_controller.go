@@ -87,6 +87,31 @@ func (c *Controller) PublicWidgetConfig(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write(responseBytes)
 }
 
+func (c *Controller) PublicWidgetPreviewConfig(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{
+		"success": true,
+		"widget": map[string]interface{}{
+			"id":        0,
+			"name":      "Preview Widget",
+			"widgetKey": "preview",
+			"settings": map[string]interface{}{
+				"primaryColor":        "#5b8cff",
+				"backgroundColor":     "#ffffff",
+				"textColor":           "#111111",
+				"botName":             "Konvoq AI",
+				"bannerText":          "Konvoq AI",
+				"bannerTextParagraph": "Live preview",
+				"welcomeMessage":      "Welcome to your live widget preview.",
+				"primaryText":         "Welcome to your live widget preview.",
+			},
+		},
+	}
+	responseBytes, _ := json.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(responseBytes)
+}
+
 func (c *Controller) PublicWebhook(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		WidgetKey string `json:"widgetKey"`
