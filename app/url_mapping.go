@@ -27,6 +27,8 @@ func (a *App) registerRoutes(r chi.Router) {
 	r.Route("/api/leads", a.mapLeadsRoutes)
 	r.Route("/api/feedback", a.mapFeedbackRoutes)
 	r.Route("/api/admin", a.mapAdminRoutes)
+	r.Route("/api/inbox", a.mapInboxRoutes)
+	r.Route("/api/flows", a.mapFlowsRoutes)
 	r.Route("/api/v1", a.mapPublicV1Routes)
 
 	// Shared widget bundle for embed + dashboard live preview.
@@ -101,6 +103,12 @@ func (a *App) mapWidgetRoutes(r chi.Router) {
 	r.Post("/regenerate", a.auth(a.ctrl.RegenerateWidget))
 	r.Delete("/", a.auth(a.ctrl.DeleteWidget))
 	r.Get("/analytics", a.auth(a.ctrl.WidgetAnalytics))
+	r.Get("/persona", a.auth(a.ctrl.GetPersona))
+	r.Put("/persona", a.auth(a.ctrl.UpdatePersona))
+	r.Get("/navigation", a.auth(a.ctrl.GetNavigation))
+	r.Put("/navigation", a.auth(a.ctrl.UpdateNavigation))
+	r.Get("/branding", a.auth(a.ctrl.GetBranding))
+	r.Put("/branding", a.auth(a.ctrl.UpdateBranding))
 }
 
 // Projects and chatbots (currently mapped to per-user widget resources)
@@ -120,8 +128,12 @@ func (a *App) mapLeadsRoutes(r chi.Router) {
 	r.Post("/webhook/test", a.auth(a.ctrl.LeadWebhookTest))
 	r.Get("/webhook/events", a.auth(a.ctrl.ListWebhookEvents))
 	r.Post("/webhook/events/{id}/retry", a.auth(a.ctrl.RetryWebhookEvent))
+	r.Get("/crm/pipeline", a.auth(a.ctrl.CRMPipeline))
+	r.Get("/follow-up/config", a.auth(a.ctrl.GetFollowUpConfig))
+	r.Put("/follow-up/config", a.auth(a.ctrl.UpdateFollowUpConfig))
 	r.Get("/{id}", a.auth(a.ctrl.GetLead))
 	r.Patch("/{id}/status", a.auth(a.ctrl.UpdateLeadStatus))
+	r.Put("/{id}/pipeline", a.auth(a.ctrl.UpdateLeadPipeline))
 	r.Delete("/{id}", a.auth(a.ctrl.DeleteLead))
 }
 
@@ -140,6 +152,25 @@ func (a *App) mapAdminRoutes(r chi.Router) {
 	r.Post("/actions/reset-usage", a.adminRoles(a.ctrl.AdminResetUsage, "super_admin", "admin"))
 	r.Post("/actions/force-logout", a.adminRoles(a.ctrl.AdminForceLogout, "super_admin", "admin"))
 	r.Post("/actions/set-plan", a.adminRoles(a.ctrl.AdminSetPlan, "super_admin"))
+}
+
+// Inbox — hybrid AI+human handoff
+func (a *App) mapInboxRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListHandoffs))
+	r.Post("/request", a.auth(a.ctrl.RequestHandoff))
+	r.Post("/{id}/claim", a.auth(a.ctrl.ClaimHandoff))
+	r.Post("/{id}/resolve", a.auth(a.ctrl.ResolveHandoff))
+	r.Get("/{id}/messages", a.auth(a.ctrl.GetHandoffMessages))
+	r.Post("/{id}/messages", a.auth(a.ctrl.SendHandoffMessage))
+}
+
+// Conversation Flows
+func (a *App) mapFlowsRoutes(r chi.Router) {
+	r.Get("/", a.auth(a.ctrl.ListFlows))
+	r.Post("/", a.auth(a.ctrl.CreateFlow))
+	r.Get("/{id}", a.auth(a.ctrl.GetFlow))
+	r.Put("/{id}", a.auth(a.ctrl.UpdateFlow))
+	r.Delete("/{id}", a.auth(a.ctrl.DeleteFlow))
 }
 
 // Public widget API (versioned, no auth)

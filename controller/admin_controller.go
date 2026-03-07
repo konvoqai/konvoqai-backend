@@ -246,11 +246,19 @@ func (c *Controller) AdminSetPlan(w http.ResponseWriter, r *http.Request) {
 		utils.JSONErr(w, http.StatusBadRequest, "userId and plan are required")
 		return
 	}
-	limit := interface{}(int64(100))
-	if body.Plan == "basic" {
-		limit = int64(1000)
-	} else if body.Plan == "enterprise" {
+	var limit interface{}
+	switch body.Plan {
+	case "free":
+		limit = int64(300)
+	case "basic":
+		limit = int64(1500)
+	case "pro":
+		limit = int64(5000)
+	case "enterprise":
 		limit = nil
+	default:
+		utils.JSONErr(w, http.StatusBadRequest, "invalid plan: must be free, basic, pro, or enterprise")
+		return
 	}
 	if _, err := c.db.Exec(`UPDATE users SET plan_type=$2,conversations_limit=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, body.UserID, body.Plan, limit); err != nil {
 		c.logRequestError(r, "admin set plan update failed", err, "target_user_id", body.UserID, "plan", body.Plan)

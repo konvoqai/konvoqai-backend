@@ -20,6 +20,7 @@ func (c *Controller) GetUsage(w http.ResponseWriter, _ *http.Request, _ TokenCla
 		remaining = left
 		atLimit = user.ConversationsUsed >= int(user.ConversationsLimit.Int64)
 	}
+	limits := limitsForPlan(user.PlanType)
 	utils.JSONOK(w, map[string]interface{}{
 		"success": true,
 		"usage": map[string]interface{}{
@@ -29,6 +30,22 @@ func (c *Controller) GetUsage(w http.ResponseWriter, _ *http.Request, _ TokenCla
 			"conversationsRemaining": remaining,
 			"resetDate":              user.PlanResetDate.AddDate(0, 1, 0),
 			"isAtLimit":              atLimit,
+		},
+		"planLimits": map[string]interface{}{
+			"scrapedPages":  limits.ScrapedPages,
+			"documents":     limits.Documents,
+			"documentsMB":   limits.DocumentsMB,
+			"conversations": limits.Conversations,
+			"chatHistory":   limits.ChatHistory,
+			"leads":         limits.Leads,
+			"hideBranding":  limits.HideBranding,
+			"hasCRM":        limits.HasCRM,
+			"hasFollowUp":   limits.HasFollowUp,
+			"hasHybrid":     limits.HasHybrid,
+			"hasFlows":      limits.HasFlows,
+			"hasPersona":    limits.HasPersona,
+			"hasNavigation": limits.HasNavigation,
+			"roles":         limits.Roles,
 		},
 	})
 }
